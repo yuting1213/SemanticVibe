@@ -1,0 +1,83 @@
+{
+  "elements": [
+    {
+      "type": "text",
+      "content": "好き",
+      "start_time": 1.2,
+      "end_time": 4.5,
+      "anchor": "auto",
+      "font": "KleeOne-SemiBold",
+      "size": 140,
+      "color": "#FF006E",
+      "outline_color": "#1A1A1A",
+      "outline_width": 8,
+      "animation": "bounce_in",
+      "rotation_jitter": 4.0,
+      "reasoning": "The hook of the song is the repeated 「好き」 — bounce-in lands on the first vocal entry."
+    },
+    {
+      "type": "text",
+      "content": "君があるための",
+      "start_time": 6.2,
+      "end_time": 9.5,
+      "anchor": "auto",
+      "font": "KleeOne-Regular",
+      "size": 72,
+      "color": "#3A86FF",
+      "outline_color": "#1A1A1A",
+      "outline_width": 5,
+      "animation": "typewriter",
+      "rotation_jitter": 0,
+      "reasoning": "Verse line at 6.17s — typewriter reveals each character with the cadence."
+    },
+    {
+      "type": "text",
+      "content": "全てが",
+      "start_time": 10.0,
+      "end_time": 13.5,
+      "anchor": "auto",
+      "font": "KleeOne-SemiBold",
+      "size": 88,
+      "color": "#FFBE0B",
+      "outline_color": "#1A1A1A",
+      "outline_width": 6,
+      "animation": "wiggle",
+      "rotation_jitter": 3.0,
+      "reasoning": "Closing fragment over the smiling woman — wiggle keeps the energy up to the cut."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "heart",
+      "near_text_id": 0,
+      "start_time": 1.2,
+      "end_time": 4.5,
+      "scale_jitter": 0.2,
+      "rotation_jitter": 15.0,
+      "reasoning": "Heart matches the 「好き」 (love/like) hook."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "sparkle",
+      "near_text_id": 1,
+      "start_time": 6.5,
+      "end_time": 9.5,
+      "scale_jitter": 0.1,
+      "rotation_jitter": 10.0,
+      "reasoning": "Sparkle next to the verse line for visual lift."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "star",
+      "near_text_id": 2,
+      "start_time": 10.0,
+      "end_time": 13.5,
+      "scale_jitter": 0.15,
+      "rotation_jitter": 12.0,
+      "reasoning": "Star punctuates the outro on the final smile."
+    }
+  ],
+  "global_style": {
+    "color_palette": ["#FF006E", "#FFBE0B", "#3A86FF", "#8338EC", "#06FFA5"],
+    "vibe": "bold pop-art, saturated primary colours, high contrast, playful energy"
+  }
+}
