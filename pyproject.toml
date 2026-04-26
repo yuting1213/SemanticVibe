@@ -41,6 +41,7 @@ dev = ["pytest>=8.0", "pytest-cov", "ruff", "nbstripout"]
 sdxl = ["diffusers>=0.27", "accelerate", "rembg"]
 
 [project.scripts]
+semanticvibe = "semanticvibe.cli:main"
 semanticvibe-render-demo = "semanticvibe.render_demo:main"
 
 [build-system]

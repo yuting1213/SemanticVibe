@@ -17,14 +17,24 @@ A 5-stage pipeline that adds Chinese-text + decoration overlays to a music video
 4. [layout/](src/semanticvibe/layout/) — occupancy map + bin-packing to place text/decorations off subjects' faces and bodies.
 5. [render/](src/semanticvibe/render/) — Pillow for text (NOT MoviePy `TextClip`), MoviePy + ffmpeg for compositing.
 
-## Implementation status (as of 2026-04-26)
+## Implementation status (as of 2026-04-26 — all 5 stages live)
 
 - **Schemas** — done. [schemas/feature_summary.py](src/semanticvibe/schemas/feature_summary.py) and [schemas/decision.py](src/semanticvibe/schemas/decision.py) are the narrow waist; treat them as a stable API once consumed by any stage.
-- **Render (Stage 5)** — Week 1 deliverable, fully wired. [render/text_render.py](src/semanticvibe/render/text_render.py), [render/animations.py](src/semanticvibe/render/animations.py), [render/composite.py](src/semanticvibe/render/composite.py), and [render_demo.py](src/semanticvibe/render_demo.py) work end-to-end given a video file + fonts in `data/fonts/`.
-- **LLM client (Stage 2)** — Protocol + Claude/OpenAI class skeletons in place; `decide()` raises `NotImplementedError` until Week 3.
-- **Stages 1, 3, 4** — module structure + stable signatures only; bodies are `NotImplementedError` per the design doc's per-week schedule (preprocess Week 2, assets/layout Week 4).
-- **Tests** — schemas, animations, config covered (37 tests, all passing). Render tests use a system TrueType font (e.g. Arial on Windows) since `data/fonts/` is gitignored; they `pytest.skip` if no system font is found.
-- **Environment** — `uv 0.11.7`, Python 3.10.20 in `.venv/`, PyTorch 2.5.1+cu121 active on the RTX 3060. moviepy resolved to **2.2.1** (the 2.x line); composite.py and pipeline.py already use the 2.x API (`from moviepy import VideoFileClip` and `with_audio` / `resized`). If you see `moviepy.editor` in old notes, that's the 1.x path — gone.
+- **Stage 1 (preprocess)** — done. [preprocess/pipeline.py](src/semanticvibe/preprocess/pipeline.py) orchestrates librosa → keyframes → Whisper (subprocess-isolated) → BLIP captions. Per-model files: [whisper_asr.py](src/semanticvibe/preprocess/whisper_asr.py), [librosa_beats.py](src/semanticvibe/preprocess/librosa_beats.py), [keyframes.py](src/semanticvibe/preprocess/keyframes.py), [blip2_caption.py](src/semanticvibe/preprocess/blip2_caption.py), [mediapipe_pose.py](src/semanticvibe/preprocess/mediapipe_pose.py).
+- **Stage 2 (LLM decide)** — done. [llm/client.py](src/semanticvibe/llm/client.py) ships ClaudeClient (tool-use) and OpenAIClient (`response_format=json_schema`). [llm/decide.py](src/semanticvibe/llm/decide.py) wraps with tenacity retry on `ValidationError` and falls back to [llm/heuristic.py](src/semanticvibe/llm/heuristic.py) when no API key is set — so the pipeline runs offline.
+- **Stage 3 (assets)** — done. [assets/clip_search.py](src/semanticvibe/assets/clip_search.py): exact-tag fast path + open-clip ViT-B-32 cosine fallback (embeddings cached at `data/assets_lib/_clip_embeddings.npy`).
+- **Stage 4 (layout)** — done. [layout/placement.py](src/semanticvibe/layout/placement.py) uses MediaPipe subject boxes → [occupancy.py](src/semanticvibe/layout/occupancy.py) mask → [bin_packing.py](src/semanticvibe/layout/bin_packing.py) greedy scan with lower-band bias to resolve `auto` anchors.
+- **Stage 5 (render)** — done. Pillow text + decoration tile compositing via [render/composite.py](src/semanticvibe/render/composite.py); decoration alpha follows the fade envelope, `near_text_id` snugs sticker to upper-right of the linked title.
+- **Pipeline orchestrator** — [pipeline.py](src/semanticvibe/pipeline.py) `run()` runs all 5 stages end-to-end; `render_from_intermediate()` re-renders from a saved Decision JSON. CLI: [cli.py](src/semanticvibe/cli.py) (`semanticvibe-render-demo` is the legacy single-stage CLI, `semanticvibe` is the full one).
+- **Streamlit UI** — [app.py](app.py) provides upload + style/provider sidebar + re-render-from-Decision button. `uv run streamlit run app.py`.
+- **Tests** — 51 passing (`uv run pytest`). Coverage: schemas (round-trip + validators), animations (envelope math), config (cost modes / presets), render-tile (uses a system TrueType as the font stand-in), heuristic Decision generator, layout (occupancy + bin-packing). Heavy stages (Whisper / BLIP / MediaPipe / CLIP) are validated by the end-to-end pipeline run, not unit tests, since they need model downloads.
+- **Environment** — `uv 0.11.7`, Python 3.10.20 in `.venv/`, PyTorch 2.5.1+cu121 active on the RTX 3060. moviepy 2.2.1, mediapipe 0.10.33 (uses `mp.tasks.vision.PoseLandmarker`, NOT the dropped `mp.solutions` API). Whisper runs in a subprocess to dodge the cuDNN symbol clash with PyTorch — see the file's docstring.
+
+## Subprocess isolation for Whisper (Windows-specific gotcha)
+
+faster-whisper bundles its own cuDNN through ctranslate2; PyTorch (used by BLIP and Open-CLIP downstream) bundles a different cuDNN build. Loading both into the same Python process on Windows produces "Could not load symbol cudnnGetLibConfig" / heap corruption (`0xC0000409` STACK_BUFFER_OVERRUN). [preprocess/whisper_asr.py](src/semanticvibe/preprocess/whisper_asr.py) runs Whisper in a `subprocess.run` with a small worker source that emits JSON on stdout. Don't refactor that back into in-process loading without solving the cuDNN conflict another way.
+
+Stage order in [preprocess/pipeline.py](src/semanticvibe/preprocess/pipeline.py) is also load-order-sensitive: librosa (numba JIT) before any GPU model. Reordering will reintroduce the same heap-corruption class of bug.
 
 ## Locked-in decisions (don't re-litigate without updating the design doc)
 
@@ -86,7 +96,9 @@ Day-to-day (from `C:\sv`):
 | Run a single test | `uv run pytest tests/test_render.py::test_render_text_returns_rgba_with_content` |
 | Lint + format | `uv run ruff check && uv run ruff format` |
 | Week 1 demo | `uv run python -m semanticvibe.render_demo --video data/test_videos/sample_30s.mp4 --json examples/hand_written_decision.json --output outputs/week1_demo.mp4` |
-| Streamlit (placeholder until Week 5) | `uv run streamlit run app.py` |
+| Streamlit | `uv run streamlit run app.py` |
+| Full pipeline (all 5 stages) | `uv run python -m semanticvibe.cli --video ... --output ... --style warm_handdrawn --preview --keep-intermediates outputs/intermediates` |
+| Re-render from saved Decision | `uv run python -m semanticvibe.render_demo --video ... --json outputs/intermediates/decision_resolved.json --output ...` |
 
 ## When the user asks for work
 
