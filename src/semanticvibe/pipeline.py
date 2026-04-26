@@ -28,6 +28,7 @@ def run(
     preview: bool = False,
     intermediate_dir: Path | None = None,
     device: str = "cuda",
+    asr_language: str | None = "zh",
 ) -> Path:
     """Run all 5 stages end-to-end.
 
@@ -41,7 +42,7 @@ def run(
 
     # Stage 1: extract_features.
     summary: FeatureSummary = extract_features(
-        video_path, style_preset=style_preset, device=device
+        video_path, style_preset=style_preset, device=device, asr_language=asr_language
     )
     if intermediate_dir is not None:
         intermediate_dir.mkdir(parents=True, exist_ok=True)

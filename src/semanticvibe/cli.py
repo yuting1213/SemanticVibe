@@ -47,6 +47,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Directory to dump FeatureSummary + Decision JSON.",
     )
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    p.add_argument(
+        "--language",
+        default="zh",
+        help="Whisper language hint (zh, ja, en, ...). Pass 'auto' to detect.",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -72,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         preview=args.preview,
         intermediate_dir=args.keep_intermediates,
         device=args.device,
+        asr_language=None if args.language == "auto" else args.language,
     )
     print(f"wrote {out}")
     return 0
