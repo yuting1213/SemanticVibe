@@ -39,8 +39,8 @@ def run(
 
     asset_library = AssetLibrary(assets_dir)  # noqa: F841 — Stage 4 will consume
 
-    # Resolve "auto" anchors against frame size.
-    from moviepy.editor import VideoFileClip  # local import: heavy
+    # Resolve "auto" anchors against frame size. moviepy 2.x: import from top-level.
+    from moviepy import VideoFileClip  # local import: heavy
 
     with VideoFileClip(str(video_path)) as src:
         frame_size = (src.w, src.h)

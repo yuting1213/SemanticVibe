@@ -94,14 +94,16 @@ def render_from_decision(
         Resolved `output_path`.
     """
     # Lazy import: moviepy is ~slow to import and pulls in numpy/PIL transitively.
-    from moviepy.editor import VideoClip, VideoFileClip
+    # moviepy 2.x exposes everything from the top-level package (no `moviepy.editor`).
+    from moviepy import VideoClip, VideoFileClip
 
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     src_clip = VideoFileClip(str(video_path))
     if preview and src_clip.h > 720:
-        src_clip = src_clip.resize(height=720)
+        # moviepy 2.x: `resize` → `resized` (returns a new clip, immutable-style API).
+        src_clip = src_clip.resized(height=720)
 
     canvas_size = (src_clip.w, src_clip.h)
     out_fps = fps or src_clip.fps or 24
@@ -109,7 +111,8 @@ def render_from_decision(
     make_frame = _make_frame_factory(decision, canvas_size, fonts_dir, src_clip)
 
     overlaid = VideoClip(make_frame, duration=src_clip.duration)
-    overlaid = overlaid.set_audio(src_clip.audio)
+    # moviepy 2.x: `set_audio` → `with_audio`.
+    overlaid = overlaid.with_audio(src_clip.audio)
 
     overlaid.write_videofile(
         str(output_path),

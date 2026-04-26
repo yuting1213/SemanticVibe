@@ -23,7 +23,8 @@ A 5-stage pipeline that adds Chinese-text + decoration overlays to a music video
 - **Render (Stage 5)** — Week 1 deliverable, fully wired. [render/text_render.py](src/semanticvibe/render/text_render.py), [render/animations.py](src/semanticvibe/render/animations.py), [render/composite.py](src/semanticvibe/render/composite.py), and [render_demo.py](src/semanticvibe/render_demo.py) work end-to-end given a video file + fonts in `data/fonts/`.
 - **LLM client (Stage 2)** — Protocol + Claude/OpenAI class skeletons in place; `decide()` raises `NotImplementedError` until Week 3.
 - **Stages 1, 3, 4** — module structure + stable signatures only; bodies are `NotImplementedError` per the design doc's per-week schedule (preprocess Week 2, assets/layout Week 4).
-- **Tests** — schemas, animations, config covered. Render tests use a system TrueType font (e.g. Arial on Windows) since `data/fonts/` is gitignored; they `pytest.skip` if no system font is found.
+- **Tests** — schemas, animations, config covered (37 tests, all passing). Render tests use a system TrueType font (e.g. Arial on Windows) since `data/fonts/` is gitignored; they `pytest.skip` if no system font is found.
+- **Environment** — `uv 0.11.7`, Python 3.10.20 in `.venv/`, PyTorch 2.5.1+cu121 active on the RTX 3060. moviepy resolved to **2.2.1** (the 2.x line); composite.py and pipeline.py already use the 2.x API (`from moviepy import VideoFileClip` and `with_audio` / `resized`). If you see `moviepy.editor` in old notes, that's the 1.x path — gone.
 
 ## Locked-in decisions (don't re-litigate without updating the design doc)
 
@@ -40,21 +41,44 @@ A 5-stage pipeline that adds Chinese-text + decoration overlays to a music video
 - **`data/` and `outputs/` are gitignored** (with carve-outs for `data/README.md`). Asset rebuild instructions live in [data/README.md](data/README.md). Don't commit test videos, fonts, or generated frames.
 - **Lazy imports for heavy SDKs.** `anthropic`, `openai`, `moviepy` are imported inside the functions that need them so an `import semanticvibe` doesn't pay the cost.
 
+## Environment quirk: project path contains Chinese characters
+
+The project sits at `C:\Users\User\Desktop\AI人文\`. On Traditional-Chinese Windows the system locale is **cp950**, and Python 3.10's `site.py` reads `.pth` files with `encoding="locale"` — so the UTF-8-encoded path stored in `_editable_impl_semanticvibe.pth` (the editable install marker) cannot be decoded and the venv refuses to start with `UnicodeDecodeError: 'cp950' codec can't decode byte 0x96`. `PYTHONUTF8=1` doesn't help because uv invokes its internal Python with `-I`, which strips `PYTHON*` env vars.
+
+**Workaround in place**: a directory junction `C:\sv → C:\Users\User\Desktop\AI人文`, plus the `.pth` rewritten to `C:\sv\src`. Everything works as long as you operate from `C:\sv`.
+
+```powershell
+# Daily workflow — always cd to the junction, not the original Chinese path:
+Set-Location C:\sv
+uv run pytest
+uv run python -m semanticvibe.render_demo ...
+```
+
+If you ever wipe `.venv` or run `uv sync --reinstall`, uv will rewrite `_editable_impl_semanticvibe.pth` back to the AI人文 path and break the venv. Re-apply the fix:
+
+```powershell
+[System.IO.File]::WriteAllText("C:\sv\.venv\Lib\site-packages\_editable_impl_semanticvibe.pth", "C:\sv\src`r`n", [System.Text.Encoding]::ASCII)
+```
+
+If the user changes their mind and wants the project at an ASCII path, the cleaner fix is to move the project; the junction is an expedient.
+
 ## Common commands
 
 After a one-off `uv` install:
 
 ```powershell
-# Install uv (one-off, per-user)
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+# Install uv (one-off, per-user) — adds to C:\Users\User\.local\bin
+powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
+$env:Path = "C:\Users\User\.local\bin;" + $env:Path
 
 # Install Python 3.10 + sync deps (CUDA 12.1 PyTorch included)
 uv python install 3.10
-uv sync
-uv sync --extra sdxl   # optional: SDXL pre-generation extras
+Set-Location C:\sv         # IMPORTANT: use the junction, not C:\Users\User\Desktop\AI人文
+uv sync --extra dev
+uv sync --extra sdxl       # optional: SDXL pre-generation extras
 ```
 
-Day-to-day:
+Day-to-day (from `C:\sv`):
 
 | Task | Command |
 |---|---|
