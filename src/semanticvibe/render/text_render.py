@@ -59,6 +59,51 @@ def measure_text(element: TextElement, fonts_dir: Path) -> tuple[int, int]:
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
 
+def fit_to_canvas(
+    element: TextElement,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int],
+    *,
+    margin: int = 16,
+    min_size: int = 24,
+) -> TextElement:
+    """Return a copy of `element` with `size` shrunk so the rendered tile
+    fits inside `canvas_size` minus `margin` on each side.
+
+    Portrait phone clips downscaled to a 404-wide preview canvas can't fit
+    7+ Chinese characters at the LLM-suggested size of 72-96 px. Rather
+    than clip the text or let it bleed off the edge, we proportionally
+    shrink. `min_size` floors the shrink so we don't end up with unreadable
+    text on degenerate inputs.
+
+    The shrink is iterative because outline width doesn't scale with font
+    size and glyph spacing isn't perfectly linear, so a single proportional
+    estimate can land short.
+    """
+    canvas_w, canvas_h = canvas_size
+    max_w = max(min_size, canvas_w - 2 * margin)
+    max_h = max(min_size, canvas_h - 2 * margin)
+
+    text_w, text_h = measure_text(element, fonts_dir)
+    if text_w <= max_w and text_h <= max_h:
+        return element
+
+    current = element
+    for _ in range(8):  # bounded so a degenerate input can't loop forever
+        text_w, text_h = measure_text(current, fonts_dir)
+        if (text_w <= max_w and text_h <= max_h) or current.size <= min_size:
+            break
+        # Shrink by the worse-fitting axis, with a small extra factor (0.95)
+        # so we converge instead of plateauing one pixel above the bound.
+        scale = min(max_w / text_w, max_h / text_h) * 0.95
+        new_size = max(min_size, int(current.size * scale))
+        if new_size == current.size:
+            new_size = max(min_size, current.size - 1)
+        current = current.model_copy(update={"size": new_size})
+
+    return current if current.size != element.size else element
+
+
 def render_text(
     element: TextElement,
     state: AnimationState,

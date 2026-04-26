@@ -14,7 +14,12 @@ import pytest
 from PIL import Image, ImageFont
 
 from semanticvibe.render.animations import AnimationState
-from semanticvibe.render.text_render import _resolve_font_file, render_text
+from semanticvibe.render.text_render import (
+    _resolve_font_file,
+    fit_to_canvas,
+    measure_text,
+    render_text,
+)
 from semanticvibe.schemas.decision import TextElement
 
 
@@ -132,3 +137,38 @@ def test_render_text_scale_grows_image(fonts_dir: Path):
     bigger = render_text(el, AnimationState(alpha=1.0, scale=1.5), fonts_dir)
     assert bigger.width > base.width
     assert bigger.height > base.height
+
+
+def test_fit_to_canvas_shrinks_oversized_text(fonts_dir: Path):
+    """A string that overflows the canvas at the requested size must shrink."""
+    el = _make_text_element(content="ABCDEFGHIJKLMNOP")
+    big = el.model_copy(update={"size": 96})
+    fitted = fit_to_canvas(big, fonts_dir, canvas_size=(200, 720), margin=8)
+    assert fitted.size < big.size
+
+
+def test_fit_to_canvas_actually_fits_when_possible(fonts_dir: Path):
+    """When the shrunk-down size still fits above the min_size floor, the
+    rendered tile must end up inside the canvas minus margins."""
+    el = _make_text_element(content="ABCDEF")
+    big = el.model_copy(update={"size": 96})
+    canvas = (300, 720)
+    margin = 16
+    fitted = fit_to_canvas(big, fonts_dir, canvas_size=canvas, margin=margin)
+    w, _h = measure_text(fitted, fonts_dir)
+    assert w <= canvas[0] - 2 * margin
+
+
+def test_fit_to_canvas_passthrough_when_fits(fonts_dir: Path):
+    el = _make_text_element(content="Hi")
+    fitted = fit_to_canvas(el, fonts_dir, canvas_size=(1280, 720))
+    # Same instance — element already fit, no copy needed.
+    assert fitted is el
+
+
+def test_fit_to_canvas_floors_at_min_size(fonts_dir: Path):
+    el = _make_text_element(content="ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    big = el.model_copy(update={"size": 200})
+    # Tiny canvas + min_size floor — must clamp at min_size, not go below.
+    fitted = fit_to_canvas(big, fonts_dir, canvas_size=(80, 80), min_size=24)
+    assert fitted.size == 24

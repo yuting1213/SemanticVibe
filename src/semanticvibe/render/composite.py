@@ -15,7 +15,7 @@ from PIL import Image
 from semanticvibe.assets.clip_search import find_asset
 from semanticvibe.assets.library import AssetLibrary
 from semanticvibe.render.animations import AnimationState, evaluate
-from semanticvibe.render.text_render import measure_text, render_text
+from semanticvibe.render.text_render import fit_to_canvas, measure_text, render_text
 from semanticvibe.schemas.decision import (
     Decision,
     DecorationElement,
@@ -136,12 +136,18 @@ def _make_frame_factory(
     """Build the per-time `make_frame(t)` callback for MoviePy's VideoClip."""
 
     # Pre-resolve everything that doesn't depend on `t` so make_frame is tight.
+    # Each text element is first shrunk to fit the canvas (no-op if it
+    # already fits) — this prevents anchored "auto" text from bleeding off
+    # the right edge on narrow portrait videos.
+    fitted_text: dict[int, TextElement] = {}
     text_anchors: dict[int, tuple[int, int]] = {}
     text_sizes: dict[int, tuple[int, int]] = {}
     for idx, el in enumerate(decision.elements):
         if isinstance(el, TextElement):
-            text_anchors[idx] = _resolve_text_anchor(el, fonts_dir, canvas_size)
-            text_sizes[idx] = measure_text(el, fonts_dir)
+            fitted = fit_to_canvas(el, fonts_dir, canvas_size)
+            fitted_text[idx] = fitted
+            text_anchors[idx] = _resolve_text_anchor(fitted, fonts_dir, canvas_size)
+            text_sizes[idx] = measure_text(fitted, fonts_dir)
 
     decoration_tiles: dict[int, Image.Image] = {}
     decoration_anchors: dict[int, tuple[int, int]] = {}
@@ -175,7 +181,7 @@ def _make_frame_factory(
                 continue
 
             if isinstance(element, TextElement):
-                tile = render_text(element, state, fonts_dir)
+                tile = render_text(fitted_text[idx], state, fonts_dir)
                 anchor_x, anchor_y = text_anchors[idx]
                 _paste_rgba(canvas, tile, (int(anchor_x + state.dx), int(anchor_y + state.dy)))
             elif isinstance(element, DecorationElement):

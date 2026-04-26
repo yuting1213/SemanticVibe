@@ -15,7 +15,7 @@ from pathlib import Path
 from semanticvibe.layout.bin_packing import pack_rects
 from semanticvibe.layout.occupancy import build_occupancy, subjects_in_window
 from semanticvibe.preprocess.mediapipe_pose import SubjectBox
-from semanticvibe.render.text_render import measure_text
+from semanticvibe.render.text_render import fit_to_canvas, measure_text
 from semanticvibe.schemas.decision import Decision, TextElement
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,13 @@ def resolve_anchors(
 
     width, height = frame_size
     new_decision = deepcopy(decision)
+
+    # Shrink any text element whose tile is wider than the frame BEFORE
+    # measuring — otherwise bin-packing rejects them as unplaceable and
+    # they fall through to the "auto" fallback in render.
+    for i, el in enumerate(new_decision.elements):
+        if isinstance(el, TextElement) and el.anchor == "auto":
+            new_decision.elements[i] = fit_to_canvas(el, fonts_dir, frame_size)
 
     auto_indices: list[int] = []
     auto_sizes: list[tuple[int, int]] = []
