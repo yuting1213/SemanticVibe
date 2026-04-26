@@ -144,6 +144,50 @@ def test_reasoning_is_required_on_decoration():
         )
 
 
+def test_text_outline_layers_default_empty():
+    el = TextElement(
+        content="x", start_time=0, end_time=1, font="Klee", size=32,
+        color="#fff", outline_color="#000", outline_width=2,
+        animation="fade", reasoning="t",
+    )
+    assert el.outline_layers == []
+
+
+def test_text_outline_layers_round_trip():
+    el = TextElement.model_validate({
+        "type": "text", "content": "x", "start_time": 0, "end_time": 1,
+        "font": "Klee", "size": 32, "color": "#fff",
+        "outline_color": "#000", "outline_width": 2,
+        "outline_layers": [{"color": "#FFFFFF", "width": 5}],
+        "shadow_offset": [3, 3],
+        "animation": "fade", "reasoning": "t",
+    })
+    assert el.outline_layers[0].color == "#FFFFFF"
+    assert el.outline_layers[0].width == 5
+    assert el.shadow_offset == (3, 3)
+
+
+def test_decoration_scatter_defaults():
+    el = DecorationElement(asset_tag="heart", start_time=0, end_time=1, reasoning="t")
+    assert el.count == 1
+    assert el.scatter is False
+    assert el.color_tint == []
+    assert el.base_size is None
+
+
+def test_decoration_count_bounded():
+    with pytest.raises(ValidationError):
+        DecorationElement(
+            asset_tag="heart", start_time=0, end_time=1, reasoning="t",
+            count=0,
+        )
+    with pytest.raises(ValidationError):
+        DecorationElement(
+            asset_tag="heart", start_time=0, end_time=1, reasoning="t",
+            count=100,
+        )
+
+
 def test_discriminated_union_dispatches_on_type():
     decision = Decision(
         elements=[

@@ -35,6 +35,18 @@ class _ElementBase(BaseModel):
         return self
 
 
+class OutlineLayer(BaseModel):
+    """One layer of the rendered text's outline stack.
+
+    Multiple layers stack from outermost (drawn first) to innermost (drawn
+    last, on top). Mimics the manga / sticker look where a glyph has e.g.
+    a thick white halo + a thin coloured outline + the fill.
+    """
+
+    color: str
+    width: int = Field(ge=0)
+
+
 class TextElement(_ElementBase):
     type: Literal["text"] = "text"
     content: str = Field(min_length=1)
@@ -47,15 +59,34 @@ class TextElement(_ElementBase):
     color: str = Field(description="Fill colour — any Pillow-acceptable CSS string or hex.")
     outline_color: str
     outline_width: int = Field(ge=0)
+    outline_layers: list[OutlineLayer] = Field(
+        default_factory=list,
+        description="Optional extra outline layers stacked OUTSIDE the primary "
+        "outline_color/outline_width. Each layer adds its width to the previous "
+        "ones, so [{'color':'#fff','width':4}] produces a white halo around "
+        "the existing outline. Empty list = single outline (the legacy default).",
+    )
     animation: AnimationName
     rotation_jitter: float = Field(
         default=0.0, description="Max rotation in degrees applied as random jitter."
+    )
+    shadow_offset: tuple[int, int] | None = Field(
+        default=None,
+        description="(dx, dy) pixel offset of an additional drop-shadow layer. "
+        "None = no shadow.",
     )
 
     @field_validator("anchor", mode="before")
     @classmethod
     def _anchor_from_list(cls, v):
         # JSON has no tuple type — accept lists of length 2 as anchors.
+        if isinstance(v, list) and len(v) == 2:
+            return tuple(v)
+        return v
+
+    @field_validator("shadow_offset", mode="before")
+    @classmethod
+    def _shadow_from_list(cls, v):
         if isinstance(v, list) and len(v) == 2:
             return tuple(v)
         return v
@@ -74,6 +105,30 @@ class DecorationElement(_ElementBase):
     )
     scale_jitter: float = Field(default=0.0, ge=0)
     rotation_jitter: float = Field(default=0.0)
+    count: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description="Number of copies to render. Use with scatter=True for "
+        "confetti-style spreads (10-15 hearts across the frame).",
+    )
+    scatter: bool = Field(
+        default=False,
+        description="If True, the `count` copies are placed at deterministic "
+        "pseudo-random positions across the frame (avoiding subjects via the "
+        "occupancy map). If False, copies stack at the resolved anchor.",
+    )
+    color_tint: list[str] = Field(
+        default_factory=list,
+        description="Optional per-copy colour tints applied to the asset. "
+        "Cycled if shorter than `count`. Empty list = no tinting.",
+    )
+    base_size: int | None = Field(
+        default=None,
+        gt=0,
+        description="Override the asset's natural pixel size. None = use the "
+        "asset PNG's native dimensions.",
+    )
 
 
 Element = Annotated[Union[TextElement, DecorationElement], Field(discriminator="type")]

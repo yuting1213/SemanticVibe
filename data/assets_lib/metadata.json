@@ -35,5 +35,58 @@
     ],
     "license": "self-drawn (procedural)",
     "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "mini_heart.png",
+    "tags": [
+      "mini-heart",
+      "confetti",
+      "small-heart"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "burst.png",
+    "tags": [
+      "burst",
+      "emphasis",
+      "starburst",
+      "pop"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "arrow.png",
+    "tags": [
+      "arrow",
+      "pointer",
+      "look-here"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "fire.png",
+    "tags": [
+      "fire",
+      "flame",
+      "hot",
+      "spicy"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "exclaim.png",
+    "tags": [
+      "exclaim",
+      "impact",
+      "bam",
+      "shock"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
   }
 ]

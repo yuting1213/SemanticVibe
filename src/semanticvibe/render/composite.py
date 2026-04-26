@@ -43,31 +43,60 @@ def _resolve_text_anchor(
     return x, y
 
 
-def _prepare_decoration_tile(
+def _tint_rgba(img: Image.Image, hex_color: str) -> Image.Image:
+    """Replace the RGB channels with `hex_color`, keeping the source alpha.
+
+    Used to recolour a single asset PNG into the palette colours so a
+    confetti scatter of hearts can show up in pink / yellow / cyan / green
+    without shipping a separate PNG per colour.
+    """
+    from PIL import ImageColor
+
+    r, g, b = ImageColor.getrgb(hex_color)[:3]
+    rgba = img.convert("RGBA")
+    pixels = np.asarray(rgba).copy()
+    alpha = pixels[..., 3]
+    # Where alpha > 0 keep the original alpha but replace RGB. Soft pixels
+    # at the edge keep their alpha so we don't lose anti-aliasing.
+    mask = alpha > 0
+    pixels[..., 0] = np.where(mask, r, pixels[..., 0])
+    pixels[..., 1] = np.where(mask, g, pixels[..., 1])
+    pixels[..., 2] = np.where(mask, b, pixels[..., 2])
+    return Image.fromarray(pixels, mode="RGBA")
+
+
+def _load_decoration_base(
     element: DecorationElement,
     library: AssetLibrary,
-    seed: int,
 ) -> Image.Image | None:
-    """Load the asset PNG and bake in scale/rotation jitter once, deterministically.
-
-    Returns None if the tag has no matching asset — caller skips silently so a
-    missing asset doesn't break the whole render.
-    """
+    """Load the asset PNG (no jitter applied) and resize to base_size."""
     matches = library.by_tag(element.asset_tag)
     if not matches:
         try:
             matches = find_asset(library, element.asset_tag, top_k=1)
         except NotImplementedError:
-            # CLIP fallback isn't built yet — Week 1 only does exact-tag matches.
             return None
     if not matches:
         return None
-
     img = Image.open(matches[0].path).convert("RGBA")
+    if element.base_size is not None:
+        scale = element.base_size / max(img.width, img.height)
+        new_w = max(1, int(round(img.width * scale)))
+        new_h = max(1, int(round(img.height * scale)))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+    return img
 
-    # Deterministic per-element jitter. Two elements with the same tag still
-    # look different; the same render run is reproducible.
-    rng = random.Random(seed)
+
+def _jitter_tile(
+    base: Image.Image,
+    element: DecorationElement,
+    rng: random.Random,
+    color: str | None = None,
+) -> Image.Image:
+    """Apply (deterministic) scale + rotation jitter and optional colour tint."""
+    img = base
+    if color is not None:
+        img = _tint_rgba(img, color)
     if element.scale_jitter:
         s = 1.0 + rng.uniform(-element.scale_jitter, element.scale_jitter)
         new_w = max(1, int(round(img.width * s)))
@@ -77,6 +106,64 @@ def _prepare_decoration_tile(
         deg = rng.uniform(-element.rotation_jitter, element.rotation_jitter)
         img = img.rotate(deg, resample=Image.BICUBIC, expand=True)
     return img
+
+
+def _prepare_decoration_copies(
+    element: DecorationElement,
+    library: AssetLibrary,
+    canvas_size: tuple[int, int],
+    text_anchors: dict[int, tuple[int, int]],
+    text_sizes: dict[int, tuple[int, int]],
+    seed: int,
+) -> list[tuple[Image.Image, tuple[int, int]]]:
+    """Build the (tile, top-left) list for `element`.
+
+    Single-shot decorations return one entry. `count > 1 + scatter` returns
+    `count` entries spread across the frame (deterministic per-element seed,
+    biased away from the centre vertical band where the subject usually sits).
+    """
+    base = _load_decoration_base(element, library)
+    if base is None:
+        return []
+
+    rng = random.Random(seed)
+    canvas_w, canvas_h = canvas_size
+    out: list[tuple[Image.Image, tuple[int, int]]] = []
+
+    if element.scatter and element.count > 1:
+        # Confetti spread: pseudo-random positions across the frame, with a
+        # mild bias against the central vertical strip (where MediaPipe
+        # would have flagged the subject — Stage 4 doesn't run on
+        # decorations directly so we approximate).
+        for i in range(element.count):
+            color = element.color_tint[i % len(element.color_tint)] if element.color_tint else None
+            tile = _jitter_tile(base, element, rng, color)
+            tw, th = tile.size
+            # Rejection sample a few times to dodge the central strip.
+            for _attempt in range(5):
+                cx = rng.randint(tw // 2 + 8, max(tw // 2 + 9, canvas_w - tw // 2 - 8))
+                cy = rng.randint(th // 2 + 8, max(th // 2 + 9, canvas_h - th // 2 - 8))
+                rel_x = abs(cx - canvas_w / 2) / (canvas_w / 2)
+                # Accept always near edges; harder to accept near horizontal centre.
+                if rng.random() < 0.3 + 0.7 * rel_x:
+                    break
+            x = cx - tw // 2
+            y = cy - th // 2
+            out.append((tile, (x, y)))
+    else:
+        # Single (or stacked) at the resolved anchor.
+        for i in range(element.count):
+            color = element.color_tint[i % len(element.color_tint)] if element.color_tint else None
+            tile = _jitter_tile(base, element, rng, color)
+            anchor = _resolve_decoration_anchor(
+                element, tile, text_anchors, text_sizes, canvas_size
+            )
+            # Multiple stacked copies: nudge each by a few px so they don't perfectly overlap.
+            x, y = anchor
+            x += i * 6
+            y += i * 6
+            out.append((tile, (x, y)))
+    return out
 
 
 def _resolve_decoration_anchor(
@@ -149,18 +236,17 @@ def _make_frame_factory(
             text_anchors[idx] = _resolve_text_anchor(fitted, fonts_dir, canvas_size)
             text_sizes[idx] = measure_text(fitted, fonts_dir)
 
-    decoration_tiles: dict[int, Image.Image] = {}
-    decoration_anchors: dict[int, tuple[int, int]] = {}
+    # Each DecorationElement → list of (tile, anchor) pairs. count=1 yields
+    # one pair; count>1 + scatter yields N pairs spread across the canvas.
+    decoration_copies: dict[int, list[tuple[Image.Image, tuple[int, int]]]] = {}
     if library is not None:
         for idx, el in enumerate(decision.elements):
             if isinstance(el, DecorationElement):
-                tile = _prepare_decoration_tile(el, library, seed=idx)
-                if tile is None:
-                    continue
-                decoration_tiles[idx] = tile
-                decoration_anchors[idx] = _resolve_decoration_anchor(
-                    el, tile, text_anchors, text_sizes, canvas_size
+                copies = _prepare_decoration_copies(
+                    el, library, canvas_size, text_anchors, text_sizes, seed=idx
                 )
+                if copies:
+                    decoration_copies[idx] = copies
 
     elements: list[tuple[int, Element]] = list(enumerate(decision.elements))
 
@@ -185,12 +271,12 @@ def _make_frame_factory(
                 anchor_x, anchor_y = text_anchors[idx]
                 _paste_rgba(canvas, tile, (int(anchor_x + state.dx), int(anchor_y + state.dy)))
             elif isinstance(element, DecorationElement):
-                base_tile = decoration_tiles.get(idx)
-                if base_tile is None:
+                copies = decoration_copies.get(idx)
+                if not copies:
                     continue  # missing asset — silently skip
-                tile = _apply_alpha(base_tile, state.alpha)
-                anchor_x, anchor_y = decoration_anchors[idx]
-                _paste_rgba(canvas, tile, (anchor_x, anchor_y))
+                for base_tile, (cx, cy) in copies:
+                    tile = _apply_alpha(base_tile, state.alpha)
+                    _paste_rgba(canvas, tile, (cx, cy))
 
         return np.asarray(canvas.convert("RGB"))
 

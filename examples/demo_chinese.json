@@ -8,12 +8,16 @@
       "anchor": "auto",
       "font": "KleeOne-SemiBold",
       "size": 96,
-      "color": "#F4A261",
-      "outline_color": "#264653",
+      "color": "#FFE066",
+      "outline_color": "#E76F51",
       "outline_width": 6,
+      "outline_layers": [
+        {"color": "#FFFFFF", "width": 5}
+      ],
+      "shadow_offset": [3, 3],
       "animation": "bounce_in",
-      "rotation_jitter": 0,
-      "reasoning": "Opening title — BLIP shows a woman alone in a sunlit room. Bounce-in lands on the first downbeat."
+      "rotation_jitter": 4.0,
+      "reasoning": "Title — yellow with warm orange outline + white halo, manga-style pop on the opening shot."
     },
     {
       "type": "text",
@@ -22,13 +26,16 @@
       "end_time": 14.0,
       "anchor": "auto",
       "font": "KleeOne-Regular",
-      "size": 72,
-      "color": "#E76F51",
+      "size": 80,
+      "color": "#FF80AB",
       "outline_color": "#264653",
       "outline_width": 5,
+      "outline_layers": [
+        {"color": "#FFFFFF", "width": 4}
+      ],
       "animation": "typewriter",
       "rotation_jitter": 0,
-      "reasoning": "BLIP captions 9-13s show a Wii remote / remote control — playful moment, typewriter follows the beat."
+      "reasoning": "Pink-on-white-on-dark: the playful Wii-remote / fan moment in the middle of the clip."
     },
     {
       "type": "text",
@@ -38,12 +45,15 @@
       "anchor": "auto",
       "font": "KleeOne-SemiBold",
       "size": 80,
-      "color": "#2A9D8F",
+      "color": "#06FFA5",
       "outline_color": "#264653",
       "outline_width": 5,
+      "outline_layers": [
+        {"color": "#FFFFFF", "width": 4}
+      ],
       "animation": "wiggle",
-      "rotation_jitter": 2.0,
-      "reasoning": "BLIP caption at 26.5s — smiling woman in green jacket in front of a window. Wiggle gives the smile some bounce."
+      "rotation_jitter": 3.0,
+      "reasoning": "Mint green wiggle on the window-light smiling shot — gentle, picturebook-warm."
     },
     {
       "type": "text",
@@ -52,47 +62,67 @@
       "end_time": 34.6,
       "anchor": "auto",
       "font": "KleeOne-SemiBold",
-      "size": 72,
-      "color": "#E9C46A",
-      "outline_color": "#264653",
-      "outline_width": 5,
+      "size": 88,
+      "color": "#FFBE0B",
+      "outline_color": "#E63946",
+      "outline_width": 6,
+      "outline_layers": [
+        {"color": "#FFFFFF", "width": 5}
+      ],
+      "shadow_offset": [3, 3],
       "animation": "bounce_in",
-      "rotation_jitter": 0,
-      "reasoning": "BLIP caption at 34.5s — smiling woman holding a donut. Closing punchline."
+      "rotation_jitter": 5.0,
+      "reasoning": "Closing punchline — donut-yellow with red outline + white halo + drop-shadow."
     },
     {
       "type": "decoration",
-      "asset_tag": "sparkle",
+      "asset_tag": "burst",
       "near_text_id": 0,
       "start_time": 1.0,
       "end_time": 5.0,
-      "scale_jitter": 0.15,
-      "rotation_jitter": 12.0,
-      "reasoning": "Sparkle on the title to mark the entry."
-    },
-    {
-      "type": "decoration",
-      "asset_tag": "heart",
-      "near_text_id": 2,
-      "start_time": 25.0,
-      "end_time": 30.0,
       "scale_jitter": 0.1,
-      "rotation_jitter": 8.0,
-      "reasoning": "Heart paired with the smiling-window moment."
+      "rotation_jitter": 20.0,
+      "base_size": 140,
+      "reasoning": "Yellow starburst behind the title for the entry pop."
     },
     {
       "type": "decoration",
-      "asset_tag": "star",
+      "asset_tag": "mini-heart",
+      "start_time": 1.0,
+      "end_time": 34.6,
+      "scale_jitter": 0.4,
+      "rotation_jitter": 25.0,
+      "count": 12,
+      "scatter": true,
+      "color_tint": ["#F4A261", "#E76F51", "#FFE066", "#2A9D8F", "#FF80AB"],
+      "base_size": 50,
+      "reasoning": "Heart confetti in the warm palette scattered across the whole clip."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "arrow",
+      "near_text_id": 1,
+      "start_time": 9.8,
+      "end_time": 14.0,
+      "scale_jitter": 0.05,
+      "rotation_jitter": 15.0,
+      "base_size": 90,
+      "reasoning": "Arrow points at the playful mid-section text."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "exclaim",
       "near_text_id": 3,
       "start_time": 33.0,
       "end_time": 34.6,
-      "scale_jitter": 0.1,
-      "rotation_jitter": 10.0,
-      "reasoning": "Star punctuates the donut close-up."
+      "scale_jitter": 0.15,
+      "rotation_jitter": 18.0,
+      "base_size": 130,
+      "reasoning": "Red impact burst for the donut close-up."
     }
   ],
   "global_style": {
-    "color_palette": ["#F4A261", "#E76F51", "#264653", "#2A9D8F", "#E9C46A"],
-    "vibe": "warm hand-drawn picturebook, slightly off-kilter strokes, paper-textured background"
+    "color_palette": ["#F4A261", "#E76F51", "#FFE066", "#2A9D8F", "#FF80AB"],
+    "vibe": "warm hand-drawn picturebook with manga-emphasis — multi-layer text, burst stickers, scattered heart confetti"
   }
 }

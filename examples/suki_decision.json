@@ -7,13 +7,17 @@
       "end_time": 4.5,
       "anchor": "auto",
       "font": "KleeOne-SemiBold",
-      "size": 140,
-      "color": "#FF006E",
-      "outline_color": "#1A1A1A",
-      "outline_width": 8,
+      "size": 156,
+      "color": "#FFE066",
+      "outline_color": "#FF006E",
+      "outline_width": 7,
+      "outline_layers": [
+        {"color": "#FFFFFF", "width": 6}
+      ],
+      "shadow_offset": [4, 4],
       "animation": "bounce_in",
-      "rotation_jitter": 4.0,
-      "reasoning": "The hook of the song is the repeated 「好き」 — bounce-in lands on the first vocal entry."
+      "rotation_jitter": 6.0,
+      "reasoning": "Hook of the song. Yellow fill, magenta inner outline, white halo, dark drop-shadow — the manga-style 'pop' look from the baseline reference."
     },
     {
       "type": "text",
@@ -25,10 +29,13 @@
       "size": 72,
       "color": "#3A86FF",
       "outline_color": "#1A1A1A",
-      "outline_width": 5,
+      "outline_width": 4,
+      "outline_layers": [
+        {"color": "#FFFFFF", "width": 5}
+      ],
       "animation": "typewriter",
       "rotation_jitter": 0,
-      "reasoning": "Verse line at 6.17s — typewriter reveals each character with the cadence."
+      "reasoning": "Verse line. Blue fill with white halo so it pops on any background. Typewriter follows the cadence."
     },
     {
       "type": "text",
@@ -37,47 +44,77 @@
       "end_time": 13.5,
       "anchor": "auto",
       "font": "KleeOne-SemiBold",
-      "size": 88,
-      "color": "#FFBE0B",
+      "size": 96,
+      "color": "#06FFA5",
       "outline_color": "#1A1A1A",
-      "outline_width": 6,
+      "outline_width": 5,
+      "outline_layers": [
+        {"color": "#FFFFFF", "width": 4}
+      ],
       "animation": "wiggle",
-      "rotation_jitter": 3.0,
-      "reasoning": "Closing fragment over the smiling woman — wiggle keeps the energy up to the cut."
+      "rotation_jitter": 5.0,
+      "reasoning": "Closing fragment. Mint green with white halo, wiggle keeps the energy up to the cut."
     },
     {
       "type": "decoration",
-      "asset_tag": "heart",
+      "asset_tag": "exclaim",
       "near_text_id": 0,
-      "start_time": 1.2,
+      "start_time": 1.0,
       "end_time": 4.5,
-      "scale_jitter": 0.2,
-      "rotation_jitter": 15.0,
-      "reasoning": "Heart matches the 「好き」 (love/like) hook."
+      "scale_jitter": 0.1,
+      "rotation_jitter": 12.0,
+      "base_size": 180,
+      "reasoning": "Red impact burst BEHIND the 好き title — fires when the hook lands."
     },
     {
       "type": "decoration",
-      "asset_tag": "sparkle",
+      "asset_tag": "mini-heart",
+      "start_time": 1.0,
+      "end_time": 13.5,
+      "scale_jitter": 0.4,
+      "rotation_jitter": 25.0,
+      "count": 14,
+      "scatter": true,
+      "color_tint": ["#FF006E", "#FFBE0B", "#3A86FF", "#8338EC", "#06FFA5", "#FF80AB"],
+      "base_size": 56,
+      "reasoning": "Heart confetti in palette colours scattered across the whole clip — the floating-hearts look from baseline2."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "arrow",
       "near_text_id": 1,
       "start_time": 6.5,
       "end_time": 9.5,
-      "scale_jitter": 0.1,
-      "rotation_jitter": 10.0,
-      "reasoning": "Sparkle next to the verse line for visual lift."
+      "scale_jitter": 0.05,
+      "rotation_jitter": 15.0,
+      "base_size": 100,
+      "reasoning": "Pink scribble arrow points at the verse line."
     },
     {
       "type": "decoration",
-      "asset_tag": "star",
+      "asset_tag": "fire",
       "near_text_id": 2,
       "start_time": 10.0,
       "end_time": 13.5,
       "scale_jitter": 0.15,
-      "rotation_jitter": 12.0,
-      "reasoning": "Star punctuates the outro on the final smile."
+      "rotation_jitter": 10.0,
+      "base_size": 90,
+      "reasoning": "Fire spark next to the closing line — adds 'this is the moment' energy on the final smile."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "burst",
+      "near_text_id": 0,
+      "start_time": 1.2,
+      "end_time": 4.5,
+      "scale_jitter": 0.1,
+      "rotation_jitter": 30.0,
+      "base_size": 160,
+      "reasoning": "Yellow starburst layered above the impact red star for the manga emphasis effect."
     }
   ],
   "global_style": {
     "color_palette": ["#FF006E", "#FFBE0B", "#3A86FF", "#8338EC", "#06FFA5"],
-    "vibe": "bold pop-art, saturated primary colours, high contrast, playful energy"
+    "vibe": "bold pop-art with manga-emphasis, multi-layer outlined text, floating heart confetti, hand-drawn arrows + fire — playful and high-energy"
   }
 }

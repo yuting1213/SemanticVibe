@@ -19,12 +19,14 @@ from semanticvibe.schemas.decision import (
     Decision,
     DecorationElement,
     GlobalStyle,
+    OutlineLayer,
     TextElement,
 )
 from semanticvibe.schemas.feature_summary import FeatureSummary
 
 DEFAULT_TITLE_FONT = "KleeOne-SemiBold"
 DEFAULT_BODY_FONT = "KleeOne-Regular"
+WHITE_HALO = OutlineLayer(color="#FFFFFF", width=4)
 
 
 def _palette_for(style_preset: str) -> tuple[list[str], str]:
@@ -69,7 +71,8 @@ def heuristic_decision(summary: FeatureSummary) -> Decision:
     n_lyrics = len(summary.lyrics)
 
     if n_lyrics:
-        # Title: first non-empty lyric.
+        # Title: first non-empty lyric. Yellow-on-warm-outline + white halo
+        # + drop-shadow for the manga-style pop.
         title_idx = _pick_distinct(0)
         title = summary.lyrics[title_idx]
         title_end = min(title.time + 4.0, summary.video_duration)
@@ -84,9 +87,11 @@ def heuristic_decision(summary: FeatureSummary) -> Decision:
                 color=palette[0],
                 outline_color=palette[2 % len(palette)],
                 outline_width=6,
+                outline_layers=[WHITE_HALO],
+                shadow_offset=(3, 3),
                 animation="bounce_in",
                 rotation_jitter=rng.uniform(-2.0, 2.0),
-                reasoning="Title hook on the first lyric line — bounce-in lands the entry beat.",
+                reasoning="Title hook on the first lyric line — bounce-in + white halo lands the entry beat.",
             )
         )
 
@@ -107,6 +112,7 @@ def heuristic_decision(summary: FeatureSummary) -> Decision:
                         color=palette[1 % len(palette)],
                         outline_color=palette[2 % len(palette)],
                         outline_width=4,
+                        outline_layers=[WHITE_HALO],
                         animation="typewriter",
                         rotation_jitter=0,
                         reasoning="Mid-song lyric reveal — typewriter follows the cadence.",
@@ -144,6 +150,7 @@ def heuristic_decision(summary: FeatureSummary) -> Decision:
                         color=palette[3 % len(palette)],
                         outline_color=palette[2 % len(palette)],
                         outline_width=5,
+                        outline_layers=[WHITE_HALO],
                         animation="wiggle",
                         rotation_jitter=rng.uniform(-3.0, 3.0),
                         reasoning="Chorus emphasis — wiggle gives playful energy on the hook.",
@@ -168,24 +175,42 @@ def heuristic_decision(summary: FeatureSummary) -> Decision:
                             color=palette[4 % len(palette)],
                             outline_color=palette[2 % len(palette)],
                             outline_width=4,
+                            outline_layers=[WHITE_HALO],
                             animation="fade",
                             rotation_jitter=0,
                             reasoning="Outro line — fade lets the song breathe.",
                         )
                     )
 
-    # Decorations: sparkle on the title, star on chorus if present.
+    # Decorations: starburst behind the title, mini-heart confetti spread
+    # across the whole song, optional star on chorus opener.
     if elements:
         title_idx = 0
         elements.append(
             DecorationElement(
-                asset_tag="sparkle",
+                asset_tag="burst",
                 near_text_id=title_idx,
                 start_time=elements[title_idx].start_time,
                 end_time=elements[title_idx].end_time,
-                scale_jitter=0.15,
-                rotation_jitter=12.0,
-                reasoning="Sparkle marks the title entry.",
+                scale_jitter=0.1,
+                rotation_jitter=20.0,
+                base_size=140,
+                reasoning="Yellow starburst behind the title — manga-style entry pop.",
+            )
+        )
+        # Heart confetti — spans the whole song, palette-tinted across copies.
+        elements.append(
+            DecorationElement(
+                asset_tag="mini-heart",
+                start_time=0.5,
+                end_time=summary.video_duration,
+                scale_jitter=0.4,
+                rotation_jitter=25.0,
+                count=12,
+                scatter=True,
+                color_tint=list(palette),
+                base_size=50,
+                reasoning="Heart confetti scattered across the whole clip in palette colours.",
             )
         )
 

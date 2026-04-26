@@ -48,13 +48,18 @@ def _load_font(font_path: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_path, size=size)
 
 
+def _total_outline_width(element: TextElement) -> int:
+    """Sum of the primary outline + every additional outline_layers width."""
+    return element.outline_width + sum(layer.width for layer in element.outline_layers)
+
+
 def measure_text(element: TextElement, fonts_dir: Path) -> tuple[int, int]:
-    """Return (width, height) of the rendered string in pixels, including outline."""
+    """Return (width, height) of the rendered string in pixels, including all outlines."""
     font_path = str(_resolve_font_file(element.font, fonts_dir))
     font = _load_font(font_path, element.size)
     bbox = font.getbbox(
         element.content,
-        stroke_width=element.outline_width,
+        stroke_width=_total_outline_width(element),
     )
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
@@ -113,7 +118,16 @@ def render_text(
 
     Returns the smallest tile that contains the glyphs; the caller is
     responsible for placing it at the element's anchor + state.dx/dy on the
-    final canvas. Outline is drawn once via Pillow's `stroke_width`.
+    final canvas.
+
+    Outline rendering: starts from the OUTERMOST layer (the last entry of
+    `outline_layers`, drawn first so it sits behind everything) and works
+    inward to the primary `outline_color`/`outline_width`, then the fill on
+    top. Pillow's `stroke_width` draws a stroke OUTSIDE the glyph at the
+    given width, so each pass uses the cumulative width up to that layer.
+
+    A drop-shadow layer (if `shadow_offset` is set) is drawn first of all,
+    underneath the outline stack.
     """
     if state.alpha <= 0:
         return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
@@ -127,23 +141,71 @@ def render_text(
         n = max(1, int(round(len(element.content) * state.reveal_fraction)))
         visible = element.content[:n]
 
-    # Sizing: use the *full* string's bbox so the tile size doesn't jitter as
-    # the typewriter advances.
-    full_bbox = font.getbbox(element.content, stroke_width=element.outline_width)
-    pad = element.outline_width + 2
-    width = (full_bbox[2] - full_bbox[0]) + 2 * pad
-    height = (full_bbox[3] - full_bbox[1]) + 2 * pad
+    # Sizing: use the *full* string's bbox at the largest stroke width so
+    # the tile doesn't jitter as the typewriter advances and accommodates
+    # the outermost outline layer plus any shadow offset.
+    total_outline = _total_outline_width(element)
+    full_bbox = font.getbbox(element.content, stroke_width=total_outline)
+    pad = total_outline + 4
+    sx, sy = element.shadow_offset or (0, 0)
+    extra_x = abs(sx)
+    extra_y = abs(sy)
+    width = (full_bbox[2] - full_bbox[0]) + 2 * pad + extra_x
+    height = (full_bbox[3] - full_bbox[1]) + 2 * pad + extra_y
 
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
+    # Anchor inside the tile: leave room for outermost outline + shadow drift.
+    base_xy = (
+        pad - full_bbox[0] + (sx if sx > 0 else 0),
+        pad - full_bbox[1] + (sy if sy > 0 else 0),
+    )
+
+    # Drop shadow (drawn first → bottom of stack).
+    if element.shadow_offset is not None:
+        draw.text(
+            (base_xy[0] + sx, base_xy[1] + sy),
+            visible,
+            font=font,
+            fill="#00000080",
+            stroke_width=total_outline,
+            stroke_fill="#00000080",
+        )
+
+    # Outline layers, OUTERMOST first (largest stroke), working inward.
+    # Each pass renders the glyph WITH the cumulative stroke width using
+    # that layer's colour as both fill and stroke. Subsequent passes draw
+    # a smaller stroke on top, so the rings appear concentric.
+    cumulative = total_outline
+    for layer in element.outline_layers:
+        draw.text(
+            base_xy,
+            visible,
+            font=font,
+            fill=layer.color,
+            stroke_width=cumulative,
+            stroke_fill=layer.color,
+        )
+        cumulative -= layer.width
+
+    # Primary outline (the innermost outline before the fill).
+    if element.outline_width > 0:
+        draw.text(
+            base_xy,
+            visible,
+            font=font,
+            fill=element.outline_color,
+            stroke_width=element.outline_width,
+            stroke_fill=element.outline_color,
+        )
+
+    # Fill on top.
     draw.text(
-        (pad - full_bbox[0], pad - full_bbox[1]),
+        base_xy,
         visible,
         font=font,
         fill=element.color,
-        stroke_width=element.outline_width,
-        stroke_fill=element.outline_color,
     )
 
     if state.alpha < 1.0:

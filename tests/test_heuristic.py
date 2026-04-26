@@ -34,14 +34,35 @@ def test_heuristic_emits_title_text():
     assert titles[0].content.startswith("第一")
 
 
-def test_heuristic_emits_sparkle_on_title():
+def test_heuristic_emits_burst_on_title():
     decision = heuristic_decision(_summary())
-    sparkles = [
+    bursts = [
         e for e in decision.elements
-        if isinstance(e, DecorationElement) and e.asset_tag == "sparkle"
+        if isinstance(e, DecorationElement) and e.asset_tag == "burst"
     ]
-    assert len(sparkles) == 1
-    assert sparkles[0].near_text_id == 0
+    assert len(bursts) == 1
+    assert bursts[0].near_text_id == 0
+
+
+def test_heuristic_emits_heart_confetti():
+    decision = heuristic_decision(_summary())
+    confetti = [
+        e for e in decision.elements
+        if isinstance(e, DecorationElement) and e.scatter
+    ]
+    assert len(confetti) == 1
+    assert confetti[0].count >= 8
+    assert confetti[0].asset_tag == "mini-heart"
+    assert confetti[0].color_tint, "confetti must carry a colour palette"
+
+
+def test_heuristic_text_has_white_halo():
+    decision = heuristic_decision(_summary())
+    titles = [e for e in decision.elements if isinstance(e, TextElement)]
+    assert titles
+    # Every text element should carry the standard white halo layer.
+    assert all(len(t.outline_layers) >= 1 for t in titles)
+    assert all(t.outline_layers[0].color.upper() == "#FFFFFF" for t in titles)
 
 
 def test_heuristic_emits_chorus_decoration():
