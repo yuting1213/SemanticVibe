@@ -227,6 +227,17 @@ def render_from_decision(
         # moviepy 2.x: `resize` → `resized` (returns a new clip, immutable-style API).
         src_clip = src_clip.resized(height=720)
 
+    # Force even width AND height. yuv420p (the only pixel format consumer
+    # players reliably support — Windows Media Player, browsers, QuickTime)
+    # subsamples chroma 2:1 in both axes, so odd dimensions trigger libx264
+    # to fall back to yuv444p, which most players refuse to open. Common
+    # case: a portrait phone clip (e.g. 1080x1920) downscaled to height=720
+    # → width 405, which is odd.
+    if src_clip.w % 2 or src_clip.h % 2:
+        new_w = src_clip.w - (src_clip.w % 2)
+        new_h = src_clip.h - (src_clip.h % 2)
+        src_clip = src_clip.resized(new_size=(new_w, new_h))
+
     canvas_size = (src_clip.w, src_clip.h)
     out_fps = fps or src_clip.fps or 24
 
@@ -243,6 +254,10 @@ def render_from_decision(
         audio_codec="aac",
         preset="medium",
         threads=4,
+        # Force yuv420p — the only H.264 pixel format consumer players
+        # (Windows Media Player, the Movies & TV app, browsers, QuickTime)
+        # reliably accept.
+        ffmpeg_params=["-pix_fmt", "yuv420p"],
         logger=None,
     )
 
