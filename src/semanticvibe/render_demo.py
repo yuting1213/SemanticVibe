@@ -31,6 +31,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Directory containing the .ttf fonts referenced in the Decision.",
     )
     p.add_argument(
+        "--assets-dir",
+        type=Path,
+        default=Path("data/assets_lib"),
+        help="Decoration asset library root. Decorations are skipped if absent.",
+    )
+    p.add_argument(
         "--preview",
         action="store_true",
         help="Downscale to 720p for faster iteration (spec §10 mitigation).",
@@ -63,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         decision,
         args.output,
         fonts_dir=args.fonts_dir,
+        assets_dir=args.assets_dir if args.assets_dir.exists() else None,
         preview=args.preview,
     )
     print(f"wrote {out}")

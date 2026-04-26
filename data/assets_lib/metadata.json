@@ -1,0 +1,39 @@
+[
+  {
+    "filename": "sparkle.png",
+    "tags": [
+      "sparkle",
+      "celebration",
+      "shine"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "heart.png",
+    "tags": [
+      "heart",
+      "love"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "star.png",
+    "tags": [
+      "star",
+      "musical-note"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  },
+  {
+    "filename": "dot.png",
+    "tags": [
+      "dot",
+      "circle"
+    ],
+    "license": "self-drawn (procedural)",
+    "source": "internal placeholder for Week 1"
+  }
+]
