@@ -1,0 +1,98 @@
+{
+  "elements": [
+    {
+      "type": "text",
+      "content": "房間午後",
+      "start_time": 1.0,
+      "end_time": 5.0,
+      "anchor": "auto",
+      "font": "KleeOne-SemiBold",
+      "size": 96,
+      "color": "#F4A261",
+      "outline_color": "#264653",
+      "outline_width": 6,
+      "animation": "bounce_in",
+      "rotation_jitter": 0,
+      "reasoning": "Opening title — BLIP shows a woman alone in a sunlit room. Bounce-in lands on the first downbeat."
+    },
+    {
+      "type": "text",
+      "content": "玩耍中",
+      "start_time": 9.5,
+      "end_time": 14.0,
+      "anchor": "auto",
+      "font": "KleeOne-Regular",
+      "size": 72,
+      "color": "#E76F51",
+      "outline_color": "#264653",
+      "outline_width": 5,
+      "animation": "typewriter",
+      "rotation_jitter": 0,
+      "reasoning": "BLIP captions 9-13s show a Wii remote / remote control — playful moment, typewriter follows the beat."
+    },
+    {
+      "type": "text",
+      "content": "窗邊微笑",
+      "start_time": 25.0,
+      "end_time": 30.0,
+      "anchor": "auto",
+      "font": "KleeOne-SemiBold",
+      "size": 80,
+      "color": "#2A9D8F",
+      "outline_color": "#264653",
+      "outline_width": 5,
+      "animation": "wiggle",
+      "rotation_jitter": 2.0,
+      "reasoning": "BLIP caption at 26.5s — smiling woman in green jacket in front of a window. Wiggle gives the smile some bounce."
+    },
+    {
+      "type": "text",
+      "content": "甜甜圈",
+      "start_time": 33.0,
+      "end_time": 34.6,
+      "anchor": "auto",
+      "font": "KleeOne-SemiBold",
+      "size": 72,
+      "color": "#E9C46A",
+      "outline_color": "#264653",
+      "outline_width": 5,
+      "animation": "bounce_in",
+      "rotation_jitter": 0,
+      "reasoning": "BLIP caption at 34.5s — smiling woman holding a donut. Closing punchline."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "sparkle",
+      "near_text_id": 0,
+      "start_time": 1.0,
+      "end_time": 5.0,
+      "scale_jitter": 0.15,
+      "rotation_jitter": 12.0,
+      "reasoning": "Sparkle on the title to mark the entry."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "heart",
+      "near_text_id": 2,
+      "start_time": 25.0,
+      "end_time": 30.0,
+      "scale_jitter": 0.1,
+      "rotation_jitter": 8.0,
+      "reasoning": "Heart paired with the smiling-window moment."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "star",
+      "near_text_id": 3,
+      "start_time": 33.0,
+      "end_time": 34.6,
+      "scale_jitter": 0.1,
+      "rotation_jitter": 10.0,
+      "reasoning": "Star punctuates the donut close-up."
+    }
+  ],
+  "global_style": {
+    "color_palette": ["#F4A261", "#E76F51", "#264653", "#2A9D8F", "#E9C46A"],
+    "vibe": "warm hand-drawn picturebook, slightly off-kilter strokes, paper-textured background"
+  }
+}

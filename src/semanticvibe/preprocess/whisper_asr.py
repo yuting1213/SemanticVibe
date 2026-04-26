@@ -55,7 +55,7 @@ def transcribe(
     model_size: str = "large-v3",
     language: str | None = "zh",
     device: str = "cuda",
-    vad: bool = True,
+    vad: bool = False,
     loudnorm: bool = True,
 ) -> list[LyricSegment]:
     """Extract lyric segments from `video_path`'s audio track.
@@ -65,8 +65,11 @@ def transcribe(
             quality (~3 GB VRAM); "medium" is the fast fallback.
         language: ISO code or None for auto-detect. Default is "zh".
         device: "cuda" or "cpu".
-        vad: Voice-activity-detection filter. Default ON. Turn OFF if VAD
-            is silently dropping all your audio (very quiet recordings).
+        vad: Voice-activity-detection filter. Default OFF — Silero VAD is
+            tuned for speech and aggressively drops segments where music
+            sits in the same band as vocals (which is most music videos).
+            Turn ON for podcast / interview style content with long
+            silences.
         loudnorm: Pre-amplify the audio to ~-16 LUFS via ffmpeg's loudnorm
             filter. Default ON — phone recordings often sit at -35 to
             -45 dB mean which is below Whisper's speech threshold.

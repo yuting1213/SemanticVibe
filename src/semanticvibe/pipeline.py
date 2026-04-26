@@ -57,14 +57,38 @@ def run(
             decision.model_dump_json(indent=2), encoding="utf-8"
         )
 
-    # Stage 4: layout — resolve "auto" anchors. We pre-compute MediaPipe
-    # detections once and pass them through to avoid a second model load.
+    # Stage 4: layout — resolve "auto" anchors against the FINAL rendered
+    # canvas size (i.e. account for the preview downscale). Otherwise layout
+    # picks coordinates valid only in the source resolution and the renderer
+    # then crops them off the smaller frame.
     log.info("Stage 4 (layout)…")
     from moviepy import VideoFileClip
 
     with VideoFileClip(str(video_path)) as src:
-        frame_size = (src.w, src.h)
+        src_w, src_h = src.w, src.h
+    if preview and src_h > 720:
+        scale = 720 / src_h
+        frame_size = (int(src_w * scale), 720)
+    else:
+        frame_size = (src_w, src_h)
+
     subjects = detect_subjects(video_path)
+    if preview and src_h > 720:
+        # Subject boxes are in source pixel space; rescale to match frame_size
+        # so the occupancy mask aligns with what the renderer will see.
+        from semanticvibe.preprocess.mediapipe_pose import SubjectBox
+
+        s = 720 / src_h
+        subjects = [
+            SubjectBox(
+                frame_time=b.frame_time,
+                x=int(b.x * s),
+                y=int(b.y * s),
+                w=int(b.w * s),
+                h=int(b.h * s),
+            )
+            for b in subjects
+        ]
     decision = resolve_anchors(
         decision,
         video_path=video_path,
