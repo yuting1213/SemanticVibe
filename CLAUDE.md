@@ -81,7 +81,7 @@ Single huge centred glyph, drawn separately from `TextElement` because the look 
 
 ## Other locked-in decisions
 
-- **Python 3.10, hard-pinned.** MediaPipe has no 3.13 wheel.
+- **Python 3.12, hard-pinned.** MediaPipe 0.10.33 publishes wheels for cp39–cp312 only — no Python 3.13+ wheel yet. Bump alongside the next mediapipe release that ships 3.13 wheels.
 - **`uv` + [pyproject.toml](pyproject.toml).** PyTorch CUDA 12.1 index is wired via `[tool.uv.sources]`. Don't switch to pip/poetry.
 - **`Decision` is discriminated** on `type` — `text` / `decoration` / `hero_text`. Every element carries a mandatory `reasoning` field (chain-of-thought for the LLM path; placeholder string for hand-written JSONs is fine).
 - **Cost modes** in [config.py](src/semanticvibe/config.py): `dev` → Haiku 4.5 / gpt-4o-mini (default); `prod` → Sonnet 4.6 / gpt-4o.
@@ -96,7 +96,7 @@ Single huge centred glyph, drawn separately from `TextElement` because the look 
 
 ## Environment quirk: project path contains Chinese characters
 
-The project sits at `C:\Users\User\Desktop\AI人文\`. On Traditional-Chinese Windows the system locale is **cp950**, and Python 3.10's `site.py` reads `.pth` files with `encoding="locale"` — so the UTF-8-encoded path stored in `_editable_impl_semanticvibe.pth` cannot be decoded and the venv refuses to start with `UnicodeDecodeError: 'cp950' codec can't decode byte 0x96`. `PYTHONUTF8=1` doesn't help because uv invokes its internal Python with `-I`, which strips `PYTHON*` env vars.
+The project sits at `C:\Users\User\Desktop\AI人文\`. On Traditional-Chinese Windows the system locale is **cp950**, and CPython's `site.py` reads `.pth` files with `encoding="locale"` — so the UTF-8-encoded path stored in `_editable_impl_semanticvibe.pth` cannot be decoded and the venv refuses to start with `UnicodeDecodeError: 'cp950' codec can't decode byte 0x96`. (Reproduced on Python 3.10 and 3.12 alike.) `PYTHONUTF8=1` doesn't help because uv invokes its internal Python with `-I`, which strips `PYTHON*` env vars.
 
 **Workaround in place**: a directory junction `C:\sv → C:\Users\User\Desktop\AI人文`, plus `_editable_impl_semanticvibe.pth` rewritten to `C:\sv\src`. Operate from `C:\sv`.
 
@@ -151,5 +151,5 @@ The design doc deliberately defines a stable baseline; treat it as historical co
 - **Schema changes** → high-impact; ripple to schemas, examples, heuristic, render. Add tests under `tests/test_schemas.py`. Update the example JSONs and CLAUDE.md's "Element types" section together.
 - **Stage X internals** → its package already exists with stable signatures; mutate within. Don't introduce new top-level modules without the user agreeing.
 - **Anything quoting spec section numbers** → the `.docx` is binary; ask the user to paste the relevant section.
-- **Adding dependencies** → must work on Python 3.10 + Windows + CUDA 12.1. Check Windows wheel availability before committing.
+- **Adding dependencies** → must work on Python 3.12 + Windows + CUDA 12.1. Check Windows wheel availability before committing.
 - **Reading frames to verify visuals** → use `clip.save_frame('outputs/probe.png', t=N)` then `Read` the PNG. The user can't see what the rendered video actually looks like unless you check.

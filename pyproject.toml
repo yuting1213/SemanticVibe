@@ -2,7 +2,7 @@
 name = "semanticvibe"
 version = "0.1.0"
 description = "Semantic-vibe overlay generator: 5-stage pipeline producing Chinese text + decoration overlays on music videos."
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.12,<3.13"
 readme = "README.md"
 authors = [{ name = "AI人文" }]
 

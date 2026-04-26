@@ -19,14 +19,12 @@ The LLM never sees video frames; it consumes a text-only `FeatureSummary`. That'
 powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
 $env:Path = "C:\Users\User\.local\bin;" + $env:Path
 
-# Install Python 3.10 (mandatory — MediaPipe has no 3.13 wheel)
-uv python install 3.10
+# Install Python 3.12 (mandatory — mediapipe 0.10.33 publishes wheels up to cp312 only)
+uv python install 3.12
 
 # Install all deps (PyTorch CUDA 12.1 included via tool.uv.sources)
-uv sync --extra dev
-
-# Optional: SDXL extras for asset generation
-uv sync --extra sdxl
+uv sync --extra dev          # + pytest / ruff / nbstripout for development
+uv sync --extra sdxl         # optional: SDXL pre-generation extras
 
 # Copy env template, optionally fill in ANTHROPIC_API_KEY / OPENAI_API_KEY
 cp .env.example .env
@@ -36,15 +34,20 @@ If your project path contains non-ASCII characters on Windows, see the "Environm
 
 ### Fallback: plain pip / Colab
 
-For environments without `uv`, [requirements.txt](requirements.txt) is exported from `uv.lock` with `--extra-index-url` for the PyTorch CUDA 12.1 wheels:
+For environments without `uv` (Colab, lab-shared boxes), [requirements.txt](requirements.txt) is exported from `uv.lock` with `--extra-index-url` for the PyTorch CUDA 12.1 wheels at the top:
 
 ```bash
-pip install -r requirements.txt          # base
-pip install -r requirements-dev.txt      # + pytest, ruff, nbstripout
-pip install -r requirements-sdxl.txt     # + diffusers, accelerate, rembg
+pip install -r requirements.txt
 ```
 
-Regenerate via `uv export --no-hashes --no-emit-project --extra <group> -o requirements-<group>.txt` after every `uv add/remove/sync --upgrade`. Re-add the `--extra-index-url` line at the top.
+The single file is **base only** — no dev tools, no SDXL extras. Add those manually if you need them:
+
+```bash
+pip install pytest pytest-cov ruff nbstripout       # dev
+pip install diffusers accelerate rembg              # SDXL pre-generation
+```
+
+Regenerate via `uv export --no-hashes --no-emit-project -o requirements.txt` after every `uv add/remove/sync --upgrade`. Re-add the `--extra-index-url` line at the top by hand.
 
 ## Quickstart
 
