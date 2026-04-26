@@ -17,23 +17,41 @@ import librosa
 import numpy as np
 
 
-def _extract_wav(video_path: Path, sr: int) -> Path:
-    """Extract mono PCM audio from `video_path` into a cached temp .wav."""
+def extract_wav(video_path: Path, sr: int = 22050, *, loudnorm: bool = True) -> Path:
+    """Extract mono PCM audio from `video_path` into a cached temp .wav.
+
+    Args:
+        loudnorm: If True (default), normalise to ~-16 LUFS via ffmpeg's
+            EBU R128 loudnorm filter. Quiet phone recordings (mean
+            -35 dB and below) otherwise fall under Whisper's speech
+            threshold and return zero segments.
+    """
     import imageio_ffmpeg
 
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    # Stable cache path: hash of source path + sr.
-    h = hashlib.sha1(f"{video_path.resolve()}|{sr}".encode("utf-8")).hexdigest()[:12]
+    # Cache key includes the loudnorm flag so the two variants don't collide.
+    key = f"{video_path.resolve()}|{sr}|ln={int(loudnorm)}"
+    h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
     wav = Path(tempfile.gettempdir()) / f"semanticvibe_{h}_{sr}.wav"
     if wav.exists():
         return wav
+
     cmd = [
         ffmpeg, "-y", "-i", str(video_path),
         "-vn", "-ac", "1", "-ar", str(sr), "-sample_fmt", "s16",
-        str(wav),
     ]
+    if loudnorm:
+        # EBU R128 single-pass loudnorm. Two-pass would be more accurate but
+        # we don't need broadcast-quality consistency, just enough headroom
+        # for Whisper to find the speech.
+        cmd += ["-af", "loudnorm=I=-16:LRA=11:TP=-1.5"]
+    cmd.append(str(wav))
     subprocess.run(cmd, check=True, capture_output=True)
     return wav
+
+
+# Back-compat alias for the older private name used inside this module.
+_extract_wav = extract_wav
 
 
 @lru_cache(maxsize=8)
