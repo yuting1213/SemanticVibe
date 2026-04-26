@@ -175,6 +175,60 @@ def test_decoration_scatter_defaults():
     assert el.base_size is None
 
 
+def test_hero_text_defaults():
+    from semanticvibe.schemas.decision import HeroTextElement
+
+    el = HeroTextElement(content="夢", start_time=1, end_time=5, reasoning="t")
+    assert el.size == 350
+    assert el.color == "#FFFFFF"
+    assert el.style == "chalk"
+    assert el.breathing is True
+    assert el.grain is True
+    assert el.pos == "center_upper"
+
+
+def test_hero_text_pos_keyword_and_pixel():
+    from semanticvibe.schemas.decision import HeroTextElement
+
+    kw = HeroTextElement(
+        content="夢", start_time=1, end_time=5, reasoning="t", pos="upper_left",
+    )
+    assert kw.pos == "upper_left"
+    px = HeroTextElement.model_validate({
+        "type": "hero_text", "content": "夢", "start_time": 1, "end_time": 5,
+        "reasoning": "t", "pos": [200, 400],
+    })
+    assert px.pos == (200, 400)
+
+
+def test_hero_text_in_decision_union():
+    """Discriminator must dispatch hero_text to HeroTextElement."""
+    from semanticvibe.schemas.decision import HeroTextElement
+
+    decision = Decision.model_validate({
+        "elements": [{
+            "type": "hero_text", "content": "夢",
+            "start_time": 1, "end_time": 5, "reasoning": "t",
+        }],
+        "global_style": {"color_palette": ["#fff"], "vibe": "minimal"},
+    })
+    assert isinstance(decision.elements[0], HeroTextElement)
+
+
+def test_decoration_scatter_zone_round_trip():
+    el = DecorationElement.model_validate({
+        "type": "decoration", "asset_tag": "heart",
+        "start_time": 0, "end_time": 1, "reasoning": "t",
+        "count": 4, "scatter": True,
+        "scatter_zone": [60, 220, 340, 700],
+        "size_steps": [200, 80, 80, 40],
+        "wiggle_amp": 2.5,
+    })
+    assert el.scatter_zone == (60, 220, 340, 700)
+    assert el.size_steps == [200, 80, 80, 40]
+    assert el.wiggle_amp == 2.5
+
+
 def test_decoration_count_bounded():
     with pytest.raises(ValidationError):
         DecorationElement(

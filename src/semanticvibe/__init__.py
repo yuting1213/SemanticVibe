@@ -9,6 +9,7 @@ from semanticvibe.schemas.decision import (
     DecorationElement,
     Element,
     GlobalStyle,
+    HeroTextElement,
     TextElement,
 )
 from semanticvibe.schemas.feature_summary import FeatureSummary, LyricSegment
@@ -19,6 +20,7 @@ __all__ = [
     "Decision",
     "TextElement",
     "DecorationElement",
+    "HeroTextElement",
     "Element",
     "GlobalStyle",
 ]

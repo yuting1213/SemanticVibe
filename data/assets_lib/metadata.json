@@ -1,40 +1,12 @@
 [
   {
-    "filename": "sparkle.png",
-    "tags": [
-      "sparkle",
-      "celebration",
-      "shine"
-    ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
-  },
-  {
     "filename": "heart.png",
     "tags": [
       "heart",
       "love"
     ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
-  },
-  {
-    "filename": "star.png",
-    "tags": [
-      "star",
-      "musical-note"
-    ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
-  },
-  {
-    "filename": "dot.png",
-    "tags": [
-      "dot",
-      "circle"
-    ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
   },
   {
     "filename": "mini_heart.png",
@@ -43,8 +15,36 @@
       "confetti",
       "small-heart"
     ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
+  },
+  {
+    "filename": "sparkle.png",
+    "tags": [
+      "sparkle",
+      "celebration",
+      "shine"
+    ],
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
+  },
+  {
+    "filename": "star.png",
+    "tags": [
+      "star",
+      "musical-note"
+    ],
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
+  },
+  {
+    "filename": "dot.png",
+    "tags": [
+      "dot",
+      "circle"
+    ],
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
   },
   {
     "filename": "burst.png",
@@ -54,8 +54,8 @@
       "starburst",
       "pop"
     ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
   },
   {
     "filename": "arrow.png",
@@ -64,8 +64,8 @@
       "pointer",
       "look-here"
     ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
   },
   {
     "filename": "fire.png",
@@ -75,8 +75,8 @@
       "hot",
       "spicy"
     ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
   },
   {
     "filename": "exclaim.png",
@@ -86,7 +86,7 @@
       "bam",
       "shock"
     ],
-    "license": "self-drawn (procedural)",
-    "source": "internal placeholder for Week 1"
+    "license": "self-drawn (procedural, hand-drawn jitter)",
+    "source": "internal"
   }
 ]

@@ -1,0 +1,69 @@
+{
+  "elements": [
+    {
+      "type": "hero_text",
+      "content": "夢",
+      "start_time": 3.0,
+      "end_time": 10.0,
+      "pos": "center_upper",
+      "size": 360,
+      "color": "#FFFFFF",
+      "halo_color": "#FFFFFF",
+      "style": "chalk",
+      "breathing": true,
+      "grain": true,
+      "font": "KleeOne-SemiBold",
+      "reasoning": "Single hero glyph centred in the upper third — chalk halo + grain + breathing scale, fades in over ~1.2s and holds 7s."
+    },
+
+    {
+      "type": "decoration",
+      "asset_tag": "heart",
+      "start_time": 2.5,
+      "end_time": 13.5,
+      "scale_jitter": 0.05,
+      "rotation_jitter": 8.0,
+      "count": 1,
+      "scatter": true,
+      "scatter_zone": [60, 220, 340, 480],
+      "size_steps": [200],
+      "color_tint": ["#FF6B9D"],
+      "wiggle_amp": 2.0,
+      "reasoning": "One large pink hand-drawn heart in the upper-left zone — the visual anchor of the cluster."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "mini-heart",
+      "start_time": 3.0,
+      "end_time": 13.5,
+      "scale_jitter": 0.1,
+      "rotation_jitter": 12.0,
+      "count": 3,
+      "scatter": true,
+      "scatter_zone": [60, 220, 340, 700],
+      "size_steps": [80, 80, 80],
+      "color_tint": ["#FF6B9D"],
+      "wiggle_amp": 2.0,
+      "reasoning": "Three medium pink hearts staggered around the big one — same cluster zone."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "mini-heart",
+      "start_time": 4.5,
+      "end_time": 13.5,
+      "scale_jitter": 0.15,
+      "rotation_jitter": 18.0,
+      "count": 4,
+      "scatter": true,
+      "scatter_zone": [60, 220, 340, 700],
+      "size_steps": [40, 40, 40, 40],
+      "color_tint": ["#E63946"],
+      "wiggle_amp": 2.0,
+      "reasoning": "Four small red hearts filling the gaps in the cluster — adds size hierarchy + a second colour."
+    }
+  ],
+  "global_style": {
+    "color_palette": ["#FF6B9D", "#E63946", "#FFFFFF"],
+    "vibe": "minimal hand-drawn picturebook — pink + red + white only, single chalk hero glyph, clustered outlined hearts in upper-left"
+  }
+}

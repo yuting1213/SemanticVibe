@@ -129,9 +129,84 @@ class DecorationElement(_ElementBase):
         description="Override the asset's natural pixel size. None = use the "
         "asset PNG's native dimensions.",
     )
+    scatter_zone: tuple[int, int, int, int] | None = Field(
+        default=None,
+        description="(x1, y1, x2, y2) in canvas pixel coordinates. When set + "
+        "scatter=True, all copies land inside this bbox instead of the full "
+        "frame — produces clustered placements (e.g. 'all in the upper-left').",
+    )
+    size_steps: list[int] | None = Field(
+        default=None,
+        description="Per-copy base_size values, cycled if shorter than count. "
+        "Lets one decoration emit big+medium+small siblings (e.g. [200, 80, "
+        "80, 80, 40, 40, 40, 40] for the 'one large + a few medium + a few "
+        "small' baseline cluster look).",
+    )
+    wiggle_amp: float = Field(
+        default=0.0,
+        ge=0,
+        description="Steady-state position wiggle amplitude (pixels) — adds "
+        "ambient hand-drawn instability so decorations don't sit dead-still.",
+    )
+
+    @field_validator("scatter_zone", mode="before")
+    @classmethod
+    def _zone_from_list(cls, v):
+        if isinstance(v, list) and len(v) == 4:
+            return tuple(v)
+        return v
 
 
-Element = Annotated[Union[TextElement, DecorationElement], Field(discriminator="type")]
+HeroPosition = Literal[
+    "center_upper", "center", "center_lower", "upper_left", "upper_right"
+]
+
+
+class HeroTextElement(_ElementBase):
+    """Single huge centred glyph (or short phrase) drawn in chalk style.
+
+    Distinct from TextElement because:
+    - Position is keyword-bucketed, not pixel-precise.
+    - Render path uses multi-blur halos + grain dots for the chalk look,
+      not stacked outlines.
+    - Animation envelope is a long slow fade with subtle scale breathing,
+      not the playful bounce/typewriter set.
+    """
+
+    type: Literal["hero_text"] = "hero_text"
+    content: str = Field(min_length=1, max_length=8)
+    pos: HeroPosition | PixelAnchor = Field(default="center_upper")
+    size: int = Field(default=350, gt=0)
+    color: str = Field(default="#FFFFFF")
+    style: Literal["chalk", "outline"] = "chalk"
+    breathing: bool = Field(
+        default=True,
+        description="Subtle scale oscillation throughout the visible window — "
+        "reads as a quietly breathing object rather than static text.",
+    )
+    font: str = Field(default="KleeOne-SemiBold")
+    halo_color: str = Field(
+        default="#FFFFFF",
+        description="Colour of the soft outer halo blur (chalk style only).",
+    )
+    grain: bool = Field(
+        default=True,
+        description="If True, scatter small white dots/lines on top of the "
+        "fill to simulate chalk dust.",
+    )
+
+    @field_validator("pos", mode="before")
+    @classmethod
+    def _pos_from_list(cls, v):
+        if isinstance(v, list) and len(v) == 2:
+            return tuple(v)
+        return v
+
+
+Element = Annotated[
+    Union[TextElement, DecorationElement, HeroTextElement],
+    Field(discriminator="type"),
+]
 
 
 class GlobalStyle(BaseModel):

@@ -6,6 +6,7 @@ callback that returns an RGB frame with our overlays burned in.
 
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 
@@ -15,13 +16,52 @@ from PIL import Image
 from semanticvibe.assets.clip_search import find_asset
 from semanticvibe.assets.library import AssetLibrary
 from semanticvibe.render.animations import AnimationState, evaluate
+from semanticvibe.render.hero_text import render_hero
 from semanticvibe.render.text_render import fit_to_canvas, measure_text, render_text
 from semanticvibe.schemas.decision import (
     Decision,
     DecorationElement,
     Element,
+    HeroTextElement,
     TextElement,
 )
+
+
+# Simple person-bbox heuristic: assume the subject occupies the central
+# vertical strip from 1/3 to 2/3 of the canvas width, full height. Used to
+# nudge scatter / decoration anchors out of where the singer typically
+# stands. Stage 4 (MediaPipe layout) supersedes this when it runs.
+PERSON_BBOX_FRAC = (1 / 3, 0.0, 2 / 3, 1.0)
+
+
+def _person_bbox(canvas_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    w, h = canvas_size
+    x1f, y1f, x2f, y2f = PERSON_BBOX_FRAC
+    return (int(w * x1f), int(h * y1f), int(w * x2f), int(h * y2f))
+
+
+def _push_outside_person_bbox(
+    rect: tuple[int, int, int, int],
+    canvas_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """If `rect` (x, y, x2, y2) overlaps the person bbox, nudge it left or
+    right (whichever side is closer) so its centre clears the strip.
+    """
+    px1, py1, px2, py2 = _person_bbox(canvas_size)
+    rx1, ry1, rx2, ry2 = rect
+    # Vertical bbox is full height — no point checking y overlap, just x.
+    if rx2 <= px1 or rx1 >= px2:
+        return rect
+    rect_w = rx2 - rx1
+    centre_x = (rx1 + rx2) / 2
+    canvas_w, _h = canvas_size
+    if centre_x < canvas_w / 2:
+        # Push left: rect's right edge sits just left of px1.
+        new_x1 = max(8, px1 - rect_w - 8)
+    else:
+        # Push right.
+        new_x1 = min(canvas_w - rect_w - 8, px2 + 8)
+    return (new_x1, ry1, new_x1 + rect_w, ry2)
 
 
 def _resolve_text_anchor(
@@ -68,8 +108,10 @@ def _tint_rgba(img: Image.Image, hex_color: str) -> Image.Image:
 def _load_decoration_base(
     element: DecorationElement,
     library: AssetLibrary,
+    *,
+    override_size: int | None = None,
 ) -> Image.Image | None:
-    """Load the asset PNG (no jitter applied) and resize to base_size."""
+    """Load the asset PNG (no jitter) and resize to override_size or base_size."""
     matches = library.by_tag(element.asset_tag)
     if not matches:
         try:
@@ -79,8 +121,9 @@ def _load_decoration_base(
     if not matches:
         return None
     img = Image.open(matches[0].path).convert("RGBA")
-    if element.base_size is not None:
-        scale = element.base_size / max(img.width, img.height)
+    target = override_size if override_size is not None else element.base_size
+    if target is not None:
+        scale = target / max(img.width, img.height)
         new_w = max(1, int(round(img.width * scale)))
         new_h = max(1, int(round(img.height * scale)))
         img = img.resize((new_w, new_h), Image.LANCZOS)
@@ -116,54 +159,107 @@ def _prepare_decoration_copies(
     text_sizes: dict[int, tuple[int, int]],
     seed: int,
 ) -> list[tuple[Image.Image, tuple[int, int]]]:
-    """Build the (tile, top-left) list for `element`.
+    """Build the (base_tile, top-left) list for `element`.
 
-    Single-shot decorations return one entry. `count > 1 + scatter` returns
-    `count` entries spread across the frame (deterministic per-element seed,
-    biased away from the centre vertical band where the subject usually sits).
+    Single-shot returns one entry. `count > 1 + scatter` spreads `count`
+    entries either across the whole frame (default) or inside `scatter_zone`
+    if set. `size_steps` cycles per-copy base sizes for big/medium/small mix.
     """
-    base = _load_decoration_base(element, library)
-    if base is None:
-        return []
-
-    rng = random.Random(seed)
     canvas_w, canvas_h = canvas_size
+    rng = random.Random(seed)
     out: list[tuple[Image.Image, tuple[int, int]]] = []
 
+    # Per-copy size override list (cycled).
+    size_cycle = element.size_steps or [None]
+    cached_bases: dict[int | None, Image.Image] = {}
+
+    def _get_base(size_key: int | None) -> Image.Image | None:
+        if size_key not in cached_bases:
+            base = _load_decoration_base(element, library, override_size=size_key)
+            if base is None:
+                return None
+            cached_bases[size_key] = base
+        return cached_bases[size_key]
+
+    # If no size_steps provided, _get_base(None) uses element.base_size.
+    if _get_base(size_cycle[0]) is None:
+        return []
+
     if element.scatter and element.count > 1:
-        # Confetti spread: pseudo-random positions across the frame, with a
-        # mild bias against the central vertical strip (where MediaPipe
-        # would have flagged the subject — Stage 4 doesn't run on
-        # decorations directly so we approximate).
+        # Determine scatter region.
+        if element.scatter_zone is not None:
+            zx1, zy1, zx2, zy2 = element.scatter_zone
+        else:
+            zx1, zy1, zx2, zy2 = 8, 8, canvas_w - 8, canvas_h - 8
+
         for i in range(element.count):
+            size_key = size_cycle[i % len(size_cycle)]
+            base = _get_base(size_key)
+            if base is None:
+                continue
             color = element.color_tint[i % len(element.color_tint)] if element.color_tint else None
             tile = _jitter_tile(base, element, rng, color)
             tw, th = tile.size
-            # Rejection sample a few times to dodge the central strip.
-            for _attempt in range(5):
-                cx = rng.randint(tw // 2 + 8, max(tw // 2 + 9, canvas_w - tw // 2 - 8))
-                cy = rng.randint(th // 2 + 8, max(th // 2 + 9, canvas_h - th // 2 - 8))
-                rel_x = abs(cx - canvas_w / 2) / (canvas_w / 2)
-                # Accept always near edges; harder to accept near horizontal centre.
-                if rng.random() < 0.3 + 0.7 * rel_x:
-                    break
+
+            # Pick a centre inside the zone; if scatter_zone is set, trust the
+            # author and don't apply person-bbox rejection. Otherwise prefer
+            # frame edges (avoid centre subject).
+            if element.scatter_zone is not None:
+                cx = rng.randint(
+                    max(zx1, tw // 2 + 4),
+                    max(zx1 + 1, min(zx2, canvas_w) - tw // 2 - 4),
+                )
+                cy = rng.randint(
+                    max(zy1, th // 2 + 4),
+                    max(zy1 + 1, min(zy2, canvas_h) - th // 2 - 4),
+                )
+            else:
+                for _attempt in range(5):
+                    cx = rng.randint(tw // 2 + 8, max(tw // 2 + 9, canvas_w - tw // 2 - 8))
+                    cy = rng.randint(th // 2 + 8, max(th // 2 + 9, canvas_h - th // 2 - 8))
+                    rel_x = abs(cx - canvas_w / 2) / (canvas_w / 2)
+                    if rng.random() < 0.3 + 0.7 * rel_x:
+                        break
             x = cx - tw // 2
             y = cy - th // 2
+
+            # Person-bbox push (only when no explicit zone — author-zoned
+            # placements are intentional and we trust them).
+            if element.scatter_zone is None:
+                rect = _push_outside_person_bbox(
+                    (x, y, x + tw, y + th), canvas_size
+                )
+                x, y = rect[0], rect[1]
+
             out.append((tile, (x, y)))
     else:
-        # Single (or stacked) at the resolved anchor.
         for i in range(element.count):
+            size_key = size_cycle[i % len(size_cycle)]
+            base = _get_base(size_key)
+            if base is None:
+                continue
             color = element.color_tint[i % len(element.color_tint)] if element.color_tint else None
             tile = _jitter_tile(base, element, rng, color)
             anchor = _resolve_decoration_anchor(
                 element, tile, text_anchors, text_sizes, canvas_size
             )
-            # Multiple stacked copies: nudge each by a few px so they don't perfectly overlap.
             x, y = anchor
             x += i * 6
             y += i * 6
             out.append((tile, (x, y)))
     return out
+
+
+def _ambient_wiggle_offset(now: float, seed: int, amp: float) -> tuple[int, int]:
+    """Steady-state ±amp pixel offset, oscillating at ~1 Hz, deterministic per-seed."""
+    if amp <= 0:
+        return (0, 0)
+    rng = random.Random(seed)
+    phase_x = rng.uniform(0, 2 * math.pi)
+    phase_y = rng.uniform(0, 2 * math.pi)
+    dx = math.sin(now * 2 * math.pi * 1.0 + phase_x) * amp
+    dy = math.cos(now * 2 * math.pi * 0.85 + phase_y) * amp
+    return (int(round(dx)), int(round(dy)))
 
 
 def _resolve_decoration_anchor(
@@ -256,6 +352,17 @@ def _make_frame_factory(
         canvas = Image.fromarray(src).convert("RGBA")
 
         for idx, element in elements:
+            if isinstance(element, HeroTextElement):
+                # Hero handles its own alpha + breathing internally.
+                result = render_hero(
+                    element, now=t, fonts_dir=fonts_dir, canvas_size=canvas_size,
+                )
+                if result is None:
+                    continue
+                tile, top_left = result
+                _paste_rgba(canvas, tile, top_left)
+                continue
+
             anim_name = element.animation if isinstance(element, TextElement) else "fade"
             state: AnimationState = evaluate(
                 anim_name,
@@ -274,9 +381,15 @@ def _make_frame_factory(
                 copies = decoration_copies.get(idx)
                 if not copies:
                     continue  # missing asset — silently skip
-                for base_tile, (cx, cy) in copies:
+                for copy_idx, (base_tile, (cx, cy)) in enumerate(copies):
                     tile = _apply_alpha(base_tile, state.alpha)
-                    _paste_rgba(canvas, tile, (cx, cy))
+                    # Per-copy ambient wiggle so each piece bobs at its own
+                    # phase — reads as hand-drawn instability, not a
+                    # uniform shake.
+                    dx, dy = _ambient_wiggle_offset(
+                        t, seed=idx * 1000 + copy_idx, amp=element.wiggle_amp
+                    )
+                    _paste_rgba(canvas, tile, (cx + dx, cy + dy))
 
         return np.asarray(canvas.convert("RGB"))
 
