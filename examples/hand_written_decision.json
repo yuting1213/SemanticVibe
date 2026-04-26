@@ -1,0 +1,48 @@
+{
+  "elements": [
+    {
+      "type": "text",
+      "content": "夏天的尾巴",
+      "start_time": 1.0,
+      "end_time": 5.0,
+      "anchor": "auto",
+      "font": "KleeOne-SemiBold",
+      "size": 96,
+      "color": "#FFF1B6",
+      "outline_color": "#264653",
+      "outline_width": 6,
+      "animation": "bounce_in",
+      "rotation_jitter": 0,
+      "reasoning": "Opening hook — the title phrase needs to land on the first downbeat. Bounce-in matches the playful vibe."
+    },
+    {
+      "type": "text",
+      "content": "輕輕的",
+      "start_time": 6.5,
+      "end_time": 10.0,
+      "anchor": [120, 200],
+      "font": "KleeOne-Regular",
+      "size": 64,
+      "color": "#F4A261",
+      "outline_color": "#264653",
+      "outline_width": 4,
+      "animation": "typewriter",
+      "rotation_jitter": 0,
+      "reasoning": "Typewriter reveals each character on consecutive beats — supports the lyric rhythm."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "sparkle",
+      "near_text_id": 0,
+      "start_time": 1.0,
+      "end_time": 5.0,
+      "scale_jitter": 0.1,
+      "rotation_jitter": 12.0,
+      "reasoning": "Sparkle clusters near the title to emphasise the bounce-in entry."
+    }
+  ],
+  "global_style": {
+    "color_palette": ["#F4A261", "#E76F51", "#264653", "#2A9D8F", "#E9C46A"],
+    "vibe": "warm hand-drawn picturebook, slightly off-kilter strokes, paper-textured background"
+  }
+}

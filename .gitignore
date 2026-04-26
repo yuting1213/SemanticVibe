@@ -1,0 +1,40 @@
+# Environments
+.env
+.venv/
+venv/
+.python-version.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Project data (rebuild via data/README.md)
+data/assets_lib/*.png
+data/assets_lib/*.jpg
+data/test_videos/*.mp4
+data/test_videos/*.mov
+data/fonts/*.ttf
+data/fonts/*.otf
+outputs/
+
+# Models / caches
+models/
+*.bin
+*.safetensors
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Notebooks (cell outputs are stripped via nbstripout, but keep this as a safety net)
+.ipynb_checkpoints/
+
+# OS
+Thumbs.db
+.DS_Store
