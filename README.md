@@ -31,6 +31,18 @@ uv sync --extra sdxl
 cp .env.example .env
 ```
 
+### Fallback: plain pip / Colab
+
+For environments without `uv` (e.g. Google Colab when the SDXL pre-gen runs there), [requirements.txt](requirements.txt) is exported from `uv.lock` and pinned. The PyTorch CUDA 12.1 index is wired in via `--extra-index-url` at the top of the file:
+
+```bash
+pip install -r requirements.txt          # base
+pip install -r requirements-dev.txt      # + pytest, ruff, nbstripout
+pip install -r requirements-sdxl.txt     # + diffusers, accelerate, rembg
+```
+
+These files are regenerated from the lockfile via `uv export --no-hashes --no-emit-project --extra <group> -o requirements-<group>.txt`. Re-run after every `uv add/remove/sync --upgrade`.
+
 ## Week 1 deliverable
 
 ```bash
