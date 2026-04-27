@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Callable
 
 from semanticvibe.config import LLMProvider, get_settings
 from semanticvibe.layout.placement import resolve_anchors
@@ -29,6 +30,7 @@ def run(
     intermediate_dir: Path | None = None,
     device: str = "cuda",
     asr_language: str | None = "zh",
+    progress_cb: Callable[[str], None] | None = None,
 ) -> Path:
     """Run all 5 stages end-to-end.
 
@@ -41,6 +43,7 @@ def run(
              settings.cost_mode, provider or settings.llm_provider)
 
     # Stage 1: extract_features.
+    if progress_cb: progress_cb("stage 1/5: extracting features")
     summary: FeatureSummary = extract_features(
         video_path, style_preset=style_preset, device=device, asr_language=asr_language
     )
@@ -51,6 +54,7 @@ def run(
         )
 
     # Stage 2: LLM decide (or heuristic fallback if no API key).
+    if progress_cb: progress_cb("stage 2/5: deciding on vibe and layout")
     decision: Decision = decide(summary, provider=provider)
     if intermediate_dir is not None:
         (intermediate_dir / "decision.json").write_text(
@@ -62,6 +66,8 @@ def run(
     # picks coordinates valid only in the source resolution and the renderer
     # then crops them off the smaller frame.
     log.info("Stage 4 (layout)…")
+
+    if progress_cb: progress_cb("stage 4/5: resolving layout anchors against frame size")
     from moviepy import VideoFileClip
 
     with VideoFileClip(str(video_path)) as src:
@@ -103,6 +109,7 @@ def run(
 
     # Stage 5: render.
     log.info("Stage 5 (render)…")
+    if progress_cb: progress_cb("stage 5/5: rendering video")
     return render_from_decision(
         video_path,
         decision,

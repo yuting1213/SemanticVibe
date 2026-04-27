@@ -26,8 +26,8 @@ def _settings_sidebar() -> dict:
     st.sidebar.header("Settings")
     provider = st.sidebar.selectbox(
         "LLM provider",
-        options=["claude", "openai"],
-        index=["claude", "openai"].index(settings.llm_provider),
+        options=["claude", "openai", "ollama"],
+        index=["claude", "openai", "ollama"].index(settings.llm_provider),
     )
     cost_mode = st.sidebar.selectbox(
         "Cost mode",
@@ -42,6 +42,7 @@ def _settings_sidebar() -> dict:
     has_key = (
         (provider == "claude" and settings.anthropic_api_key)
         or (provider == "openai" and settings.openai_api_key)
+        or (provider == "ollama")
     )
     if not has_key:
         st.sidebar.warning(
@@ -92,10 +93,11 @@ def main() -> None:
         video_path.write_bytes(uploaded.getbuffer())
         output_path = run_dir / "output.mp4"
 
-        with st.spinner("Rendering…"):
+
+        with st.status("Preparing...", expanded=True) as status:
             try:
                 if rerender_btn:
-                    # Look for the most recent intermediates dir.
+                    status.update(label="re-rendering from last Decision JSON…", state="running", expanded=True)
                     candidates = sorted(workdir_root.glob("run_*"), reverse=True)
                     decision_json = None
                     for c in candidates:
@@ -114,6 +116,7 @@ def main() -> None:
                         output_path,
                         preview=cfg["preview"],
                     )
+                    status.update(label="Complete!", state="complete", expanded=False)
                 else:
                     out = run(
                         video_path,
@@ -122,8 +125,11 @@ def main() -> None:
                         provider=cfg["provider"],
                         preview=cfg["preview"],
                         intermediate_dir=run_dir,
+                        progress_cb=lambda msg: status.update(label=msg), 
                     )
-            except Exception as exc:  # noqa: BLE001 — surface anything, debug-friendly
+                    status.update(label="Complete!", state="complete", expanded=False)
+            except Exception as exc: 
+                status.update(label="Processing failed", state="error", expanded=True)
                 st.exception(exc)
                 return
 
