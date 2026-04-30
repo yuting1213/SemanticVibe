@@ -126,6 +126,7 @@ def main() -> None:
                         preview=cfg["preview"],
                         intermediate_dir=run_dir,
                         progress_cb=lambda msg: status.update(label=msg), 
+                        asr_language=None
                     )
                     status.update(label="Complete!", state="complete", expanded=False)
             except Exception as exc: 
