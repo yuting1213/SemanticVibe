@@ -32,7 +32,7 @@ def _load_blip(model_name: str, device: str):
     from transformers import BlipForConditionalGeneration, BlipProcessor
 
     processor = BlipProcessor.from_pretrained(model_name)
-    model = BlipForConditionalGeneration.from_pretrained(model_name)
+    model = BlipForConditionalGeneration.from_pretrained(model_name, low_cpu_mem_usage=False)
     model.to(device)
     model.eval()
     return processor, model, torch

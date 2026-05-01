@@ -180,12 +180,61 @@ class OpenAIClient:
         return Decision.model_validate_json(text)
 
 
+class OllamaClient:
+    """Ollama implementation. Uses OpenAI Python SDK compatibility layer."""
+
+    provider_name = "ollama"
+    _SCHEMA_NAME = "Decision"
+
+    def __init__(self, api_key: str | None = None) -> None:
+        from openai import OpenAI
+        from semanticvibe.config import get_settings # 確保有引入
+
+        settings = get_settings()
+        
+        self._client = OpenAI(
+            base_url="http://localhost:11434/v1",
+            api_key="ollama" 
+        )
+        
+        self._default_model = settings.model_for("ollama")
+
+    def decide(self, summary: FeatureSummary, *, model: str | None = None) -> Decision:
+        messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for ex in FEW_SHOT_EXAMPLES:
+            messages.append(
+                {"role": "user", "content": build_user_message(json.dumps(ex["summary"]))}
+            )
+            messages.append(
+                {"role": "assistant", "content": json.dumps(ex["decision"], ensure_ascii=False)}
+            )
+        messages.append(
+            {"role": "user", "content": build_user_message(summary.model_dump_json(indent=2))}
+        )
+
+        response = self._client.chat.completions.create(
+            model=model or self._default_model,
+            messages=messages,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": self._SCHEMA_NAME,
+                    "schema": _decision_json_schema(),
+                    "strict": False,  
+                },
+            },
+        )
+
+        text = response.choices[0].message.content or ""
+        log.debug("Ollama returned %d chars", len(text))
+        return Decision.model_validate_json(text)
+
 _REGISTRY: dict[LLMProvider, type[LLMClient]] = {
     "claude": ClaudeClient,
     "openai": OpenAIClient,
+    "ollama": OllamaClient,
 }
 
-
-def get_client(provider: LLMProvider | None = None) -> LLMClient:
-    settings = get_settings()
-    return _REGISTRY[provider or settings.llm_provider]()
+def get_client(provider: str | None = None) -> LLMClient:
+    provider = provider or get_settings().llm_provider
+    return {"claude": ClaudeClient, "openai": OpenAIClient, "ollama": OllamaClient}[provider]()

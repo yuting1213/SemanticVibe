@@ -15,9 +15,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 CostMode = Literal["dev", "prod"]
 LLMProvider = Literal["claude", "openai"]
 
-COST_MODES: dict[CostMode, dict[LLMProvider, str]] = {
-    "dev": {"claude": "claude-haiku-4-5", "openai": "gpt-4o-mini"},
-    "prod": {"claude": "claude-sonnet-4-6", "openai": "gpt-4o"},
+COST_MODES = {
+    "dev":  {"claude": "claude-haiku-4-5",  "openai": "gpt-4o-mini", "ollama": "llama3"},
+    "prod": {"claude": "claude-sonnet-4-6", "openai": "gpt-4o", "ollama": "llama3"}
 }
 
 
