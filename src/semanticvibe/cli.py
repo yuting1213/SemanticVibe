@@ -33,7 +33,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument(
         "--provider",
-        choices=["claude", "openai"],
+        choices=["claude", "openai", "ollama"],
         default=None,
         help="Override the LLM provider; defaults to settings.llm_provider.",
     )

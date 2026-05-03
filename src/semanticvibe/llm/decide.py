@@ -52,14 +52,17 @@ def decide(
     """
     settings = get_settings()
     chosen = provider or settings.llm_provider
-    has_key = (
-        (chosen == "claude" and settings.anthropic_api_key)
+    # Ollama runs locally and needs no key; cloud providers do.
+    can_call_provider = (
+        chosen == "ollama"
+        or (chosen == "claude" and settings.anthropic_api_key)
         or (chosen == "openai" and settings.openai_api_key)
     )
-    if not has_key:
+    if not can_call_provider:
         if fallback_to_heuristic:
             log.warning(
-                "No %s API key — falling back to heuristic Decision generator.", chosen
+                "Cannot reach %s (no API key configured) — "
+                "falling back to heuristic Decision generator.", chosen
             )
             return heuristic_decision(summary)
         raise RuntimeError(f"No API key configured for provider {chosen!r}")

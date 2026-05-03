@@ -188,15 +188,12 @@ class OllamaClient:
 
     def __init__(self, api_key: str | None = None) -> None:
         from openai import OpenAI
-        from semanticvibe.config import get_settings # 確保有引入
 
         settings = get_settings()
-        
         self._client = OpenAI(
             base_url="http://localhost:11434/v1",
-            api_key="ollama" 
+            api_key="ollama",
         )
-        
         self._default_model = settings.model_for("ollama")
 
     def decide(self, summary: FeatureSummary, *, model: str | None = None) -> Decision:
@@ -235,6 +232,7 @@ _REGISTRY: dict[LLMProvider, type[LLMClient]] = {
     "ollama": OllamaClient,
 }
 
+
 def get_client(provider: str | None = None) -> LLMClient:
     provider = provider or get_settings().llm_provider
-    return {"claude": ClaudeClient, "openai": OpenAIClient, "ollama": OllamaClient}[provider]()
+    return _REGISTRY[provider]()

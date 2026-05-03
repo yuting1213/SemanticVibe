@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # ---------------------------------------------------------------------------
 
 CostMode = Literal["dev", "prod"]
-LLMProvider = Literal["claude", "openai"]
+LLMProvider = Literal["claude", "openai", "ollama"]
 
 COST_MODES = {
     "dev":  {"claude": "claude-haiku-4-5",  "openai": "gpt-4o-mini", "ollama": "llama3"},
