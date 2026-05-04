@@ -18,7 +18,15 @@ EXAMPLES_DIR = REPO_ROOT / "examples"
 
 @pytest.fixture
 def hand_written_decision_dict() -> dict:
-    with (EXAMPLES_DIR / "hand_written_decision.json").open(encoding="utf-8") as f:
+    """Legacy hand-written reference (now under examples/legacy/).
+
+    v5 builds Decisions programmatically (semantic_align → build_elements);
+    this fixture stays so the schema-roundtrip tests can still verify the
+    historical file shape parses cleanly.
+    """
+    with (EXAMPLES_DIR / "legacy" / "hand_written_decision.json").open(
+        encoding="utf-8"
+    ) as f:
         return json.load(f)
 
 

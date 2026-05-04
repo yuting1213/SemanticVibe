@@ -112,13 +112,17 @@ def _load_decoration_base(
     *,
     override_size: int | None = None,
 ) -> Image.Image | None:
-    """Load the asset PNG (no jitter) and resize to override_size or base_size."""
+    """Load the asset PNG (no jitter) and resize to override_size or base_size.
+
+    Exact-tag lookup only by default. Loading the CLIP model just to
+    resolve a missing tag is expensive (5+ s) and pulls open_clip →
+    transformers → sklearn → pandas → pyarrow into the process; on
+    Windows the pyarrow import has been observed to hit WinError 6714
+    when scanning DLL directories. So missing tags now silently return
+    None — the caller skips the decoration. Use `assets.clip_search.
+    find_asset` directly if you genuinely want fuzzy matching.
+    """
     matches = library.by_tag(element.asset_tag)
-    if not matches:
-        try:
-            matches = find_asset(library, element.asset_tag, top_k=1)
-        except NotImplementedError:
-            return None
     if not matches:
         return None
     img = Image.open(matches[0].path).convert("RGBA")

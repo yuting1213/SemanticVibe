@@ -23,6 +23,10 @@ data/fonts/*.ttf
 data/fonts/*.otf
 outputs/
 
+# v5 sample inputs — videos are gitignored (large), lyric JSONs commit normally.
+samples/*.mp4
+samples/*.mov
+
 # SDXL / Z-Image-generated stickers (rebuild via scripts/generate_stickers.py)
 assets/
 loras/
