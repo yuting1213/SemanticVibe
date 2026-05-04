@@ -90,7 +90,16 @@ def _pick_idle(strength: float, rng: random.Random) -> str:
 
 
 def _highlight_duration(highlight: Highlight, all_highlights: list[Highlight]) -> float:
-    """Hold each highlight until 0.5 s before the next, capped at 5 s."""
+    """Hold each highlight on screen for X seconds.
+
+    Priority:
+    1. `highlight.duration` if explicitly set (came from the lyric JSON's
+       optional `duration` field)
+    2. Gap to the next highlight minus 0.3 s breathing room, capped at 5 s
+    3. 4 s default for the last highlight
+    """
+    if highlight.duration is not None:
+        return float(highlight.duration)
     later = [h for h in all_highlights if h.lyric_time > highlight.lyric_time]
     if not later:
         return 4.0

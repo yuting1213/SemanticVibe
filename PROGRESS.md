@@ -1,4 +1,70 @@
-# v5 progress — lyrics-driven, pose-aware element generation
+# v5+ — lyrics input modes (Whisper auto / standalone audio / manual JSON)
+
+## What changed since v5
+
+`render` now resolves lyrics from three sources by priority, instead of
+requiring a manual `--lyrics` JSON every time:
+
+1. `--lyrics` (manual JSON) — highest priority, bypasses Whisper
+2. `--audio` (independent audio file) — Whisper transcribes that file
+3. (default) Whisper transcribes the video's embedded audio track
+
+Plus optional `--mix-audio replace|overlay` to splice the
+`--audio` track into the final mp4 (otherwise the video's original
+audio is kept).
+
+### New / modified
+
+| File | What |
+|---|---|
+| `src/semanticvibe/lyrics.py` (new) | Pydantic `LyricLine(time, text, duration?)` + `LyricsFile` root model + `load_lyrics` / `save_lyrics` / `to_dict_list` helpers. Single source of truth for the on-disk schema. |
+| `src/semanticvibe/preprocess/whisper_asr.py` | Split `transcribe()` into two named entry points: `transcribe_audio(path)` (core, accepts any ffmpeg-decodable file) and `transcribe_video(path)` (alias). The legacy `transcribe` name still resolves to `transcribe_video` for backward compat with `preprocess/pipeline.py` and `cli.py`. |
+| `src/semanticvibe/render/__main__.py` | Big rework: `--lyrics` is now optional, `--audio` and `--mix-audio replace/overlay` and `--whisper-model` and `--language` and `--device` added. New `get_lyrics(args)` implements the three-mode priority. New `_maybe_mix_audio()` post-processes via imageio_ffmpeg's bundled binary (replace = `-map 0:v -map 1:a -c:v copy -c:a aac -shortest`; overlay = `amix=inputs=2:duration=shortest`). |
+| `src/semanticvibe/semantic_align.py` | `LyricLine` now re-exports the Pydantic version; `Highlight` gains optional `duration: float \| None`; `_rule_based_align` forwards `LyricLine.duration` into `Highlight.duration`; `load_lyrics` delegates to `lyrics.load_lyrics` so schema validation lives in one place. |
+| `src/semanticvibe/build_elements.py` | `_highlight_duration` now respects `Highlight.duration` when explicitly set; falls back to gap-based heuristic when None. |
+| `scripts/preview_lyrics.py` (new) | Whisper preview CLI: takes `--video` or `--audio`, prints results to console, caches at `.cache/lyrics/<sha1>.json` (keyed by path + model + language + mtime), and writes a fresh editable copy to `samples/auto_lyrics.json`. Subsequent runs hit cache; `--force` re-runs. |
+| `tests/test_lyrics.py` (new) | 9 tests covering the Pydantic schema (negative time / empty text / non-positive duration rejection, duration round-trip preserves None, save omits None duration field, load gives clear ValidationError on missing field, accepts the committed `samples/lyrics_mosimosi.json`, `to_dict_list` drops None). |
+| `tests/test_render_cli.py` (new) | 8 tests covering CLI argument parsing + `get_lyrics()` priority dispatch (mock Whisper, assert priority-1 wins / priority-2 routes to `--audio` / priority-3 routes to video itself / `--mix-audio` choices validated). |
+
+### Lyrics JSON schema
+
+```json
+[
+  {"time": 2.5, "text": "もしもし"},
+  {"time": 5.0, "text": "電波", "duration": 0.8}
+]
+```
+
+`time` (sec, ≥ 0) and `text` (non-empty) are required. `duration` is
+optional — when set, the line stays on screen for that many seconds;
+when omitted, the renderer holds it until the next line minus 0.3 s
+breathing room (capped at 5 s). Pydantic validation surfaces clear
+errors: feeding `{"timestamp": 1, "text": "x"}` raises with a message
+that names the missing `time` field.
+
+### Tests
+
+134 passing (was 117). +17 from the two new suites.
+
+### Verified
+
+- `python -m semanticvibe.render --help` shows the new flags.
+- 134/134 pytest green.
+- `samples/lyrics_mosimosi.json` (no `duration` field) still
+  round-trips through `load_lyrics → save_lyrics → load_lyrics`.
+
+### Caveats
+
+The `_maybe_mix_audio` helper hasn't been smoke-tested end-to-end
+because it needs a real audio file alongside `samples/dance.mp4`.
+ffmpeg invocation is straightforward (matches the spec's example
+verbatim) but if you hit issues with `--mix-audio overlay` on
+specific codecs, the mix happens through `amix=inputs=2`; switch to
+`-c:a libmp3lame` in `_maybe_mix_audio` if AAC encoding chokes.
+
+---
+
+# v5 — lyrics-driven, pose-aware element generation
 
 ## What changed
 

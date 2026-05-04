@@ -84,10 +84,10 @@ TAG_VOCABULARY: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class LyricLine:
-    time: float
-    text: str
+# Re-export the canonical Pydantic LyricLine from semanticvibe.lyrics so
+# callers writing `from semanticvibe.semantic_align import LyricLine` still
+# work — the underlying type is the schema-validated one.
+from semanticvibe.lyrics import LyricLine
 
 
 @dataclass
@@ -98,6 +98,9 @@ class Highlight:
     no decoration (just the text). `strength` is 0–1 and roughly maps to
     "how punchy should the entry animation be" — used downstream by
     build_elements to pick scale_pop / fade / etc.
+
+    `duration` is forwarded from the input LyricLine (when set). build_elements
+    falls back to a gap-based heuristic if it's None.
     """
 
     lyric_time: float
@@ -105,6 +108,7 @@ class Highlight:
     decoration_tag: str | None = None
     strength: float = 0.5
     reasoning: str = ""
+    duration: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +144,7 @@ def _rule_based_align(lyrics: list[LyricLine]) -> list[Highlight]:
     Each line gets:
     - decoration_tag from TAG_VOCABULARY if any keyword matches, else None
     - strength = 0.8 if a tag matched (it's evocative), else 0.4 (filler)
+    - duration forwarded from the input LyricLine (None → gap heuristic)
     """
     highlights: list[Highlight] = []
     for line in lyrics:
@@ -153,6 +158,7 @@ def _rule_based_align(lyrics: list[LyricLine]) -> list[Highlight]:
                 reasoning=(
                     f"keyword match → tag={tag!r}" if tag else "no keyword match"
                 ),
+                duration=getattr(line, "duration", None),
             )
         )
     return highlights
@@ -313,7 +319,8 @@ def align(
         if isinstance(item, LyricLine):
             parsed.append(item)
         else:
-            parsed.append(LyricLine(time=float(item["time"]), text=str(item["text"])))
+            # Dict input — let Pydantic validate (handles optional duration).
+            parsed.append(LyricLine.model_validate(item))
 
     if provider == "rule_based":
         return _rule_based_align(parsed)
@@ -330,6 +337,9 @@ def align(
 
 
 def load_lyrics(path: Path) -> list[LyricLine]:
-    """Convenience loader for samples/lyrics_*.json files."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return [LyricLine(time=float(r["time"]), text=str(r["text"])) for r in raw]
+    """Convenience loader. Delegates to the canonical implementation in
+    `semanticvibe.lyrics` so schema validation lives in one place.
+    """
+    from semanticvibe.lyrics import load_lyrics as _impl
+
+    return _impl(path)

@@ -49,39 +49,93 @@ pip install diffusers accelerate rembg              # SDXL pre-generation
 
 Regenerate via `uv export --no-hashes --no-emit-project -o requirements.txt` after every `uv add/remove/sync --upgrade`. Re-add the `--extra-index-url` line at the top by hand.
 
-## Quickstart
+## Quickstart (v5: lyrics-driven render)
 
-The project ships **9 procedural hand-drawn decoration assets** (heart / mini_heart / sparkle / star / dot / burst / arrow / fire / exclaim) and **5 reference Decision JSONs**. After `uv sync`, drop a video into `data/test_videos/` and pick an example to render:
+The current entry point generates everything from the **lyrics** of the
+song + the **video itself** — text content, decoration tags, positions,
+and animations are all derived, nothing is hard-coded.
 
 ```powershell
-# Stage 5 only — render from a hand-written Decision JSON (fast):
-uv run python -m semanticvibe.render_demo `
-    --video data/test_videos/your_clip.mp4 `
-    --json examples/sing_full.json `
-    --output outputs/yours.mp4 `
-    --preview                                # downscale to 720p
-
-# Full pipeline — Stages 1–5 end-to-end (Whisper + BLIP + MediaPipe + LLM):
-uv run python -m semanticvibe.cli `
-    --video data/test_videos/your_clip.mp4 `
-    --output outputs/auto.mp4 `
-    --style warm_handdrawn `
-    --language zh `
-    --preview `
-    --keep-intermediates outputs/intermediates
+# Mode 3: full auto (Whisper on the video's embedded audio)
+uv run python -m semanticvibe.render `
+    --video samples/dance.mp4 `
+    --out outputs/auto.mp4 --preview
 ```
 
-Without an API key, the full pipeline emits a deterministic heuristic Decision (title + chorus + outro lines, with white-halo outlines + scattered heart confetti) so the offline path still produces something watchable.
+See [PROGRESS.md](PROGRESS.md) for the full architecture summary.
 
-### Example JSONs
+### Lyrics input — three modes
 
-| File | What it shows |
-|---|---|
-| [examples/hand_written_decision.json](examples/hand_written_decision.json) | Minimal 3-element example |
-| [examples/sing_full.json](examples/sing_full.json) | Full 10-line lyric overlay, mixed animations + per-line accents + heart confetti |
-| [examples/suki_decision.json](examples/suki_decision.json) | Bold-pop palette with multi-outline glow + scatter + impact bursts |
-| [examples/demo_chinese.json](examples/demo_chinese.json) | Warm hand-drawn manual JSON for a vocals-free clip |
-| [examples/baseline_dream.json](examples/baseline_dream.json) | Hand-drawn aesthetic showcase: chalk hero 「夢」 + clustered outlined hearts (pink/red/white only) |
+The system picks the highest-priority source automatically:
+
+#### Mode 1: full auto (default)
+
+```powershell
+uv run python -m semanticvibe.render --video samples/dance.mp4 --out outputs/out.mp4
+```
+
+→ Whisper transcribes the video's embedded audio track.
+
+#### Mode 2: independent audio file
+
+```powershell
+uv run python -m semanticvibe.render `
+    --video samples/dance.mp4 --audio samples/song.mp3 `
+    --mix-audio replace --out outputs/out.mp4
+```
+
+→ Whisper runs on `song.mp3` (better isolation than the video's mic
+audio); `--mix-audio replace` also splices `song.mp3` into the final
+mp4. `--mix-audio overlay` mixes both. Omit the flag to keep the
+video's original audio with Whisper having only consulted the
+independent file for ASR.
+
+#### Mode 3: hand-edited lyrics (most precise)
+
+When Whisper mis-transcribes (loud BGM, English/Japanese mix, slang),
+preview + edit the JSON before render:
+
+```powershell
+# 1. Preview Whisper's pick + cache to .cache/lyrics/<sha>.json
+uv run python scripts/preview_lyrics.py --audio samples/song.mp3
+
+# 2. Edit samples/auto_lyrics.json — fix typos, adjust timings, optionally add `duration` field
+
+# 3. Render from your edited JSON
+uv run python -m semanticvibe.render `
+    --video samples/dance.mp4 --audio samples/song.mp3 `
+    --lyrics samples/auto_lyrics.json `
+    --mix-audio replace --out outputs/edited.mp4
+```
+
+### Lyrics JSON schema
+
+Whether produced by Whisper or hand-written, the format is:
+
+```json
+[
+  {"time": 2.5, "text": "もしもし"},
+  {"time": 5.0, "text": "電波", "duration": 0.8}
+]
+```
+
+`duration` (seconds, optional) controls how long the line stays on
+screen. When omitted, the renderer holds it until the next line
+starts (capped at 5 s). Validated by Pydantic at load — bad input
+raises a clear `ValidationError` instead of crashing 50 lines later.
+
+### Hand-written examples (legacy)
+
+`examples/legacy/` contains the older hand-written Decision JSONs
+(`baseline_dream`, `sing_full`, `suki_decision`, ...). They remain
+schema-valid and renderable via the legacy CLI:
+
+```powershell
+uv run python -m semanticvibe.render_demo `
+    --video samples/dance.mp4 `
+    --json examples/legacy/baseline_dream_v4.json `
+    --output outputs/legacy_demo.mp4 --preview
+```
 
 You'll also need fonts in `data/fonts/` and the procedural assets — see [data/README.md](data/README.md).
 
@@ -106,7 +160,7 @@ Upload, pick provider / cost mode / style preset / preview, render, then optiona
 ## Testing
 
 ```powershell
-uv run pytest                    # all 65 tests
+uv run pytest                    # all 134 tests
 uv run pytest tests/test_render.py::test_render_text_returns_rgba_with_content
 uv run ruff check && uv run ruff format
 ```
