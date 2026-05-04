@@ -74,8 +74,27 @@ SDXL_HEIGHT = 1024
 SDXL_WIDTH = 1024
 SDXL_LORA_SCALE = 0.7
 
+# Z-Image Turbo: distilled DiT, 8 NFE, low CFG (it was distilled away).
+# 6B params at bf16 ≈ 12 GB, so cpu_offload is required on a 12 GB card.
+ZIMAGE_MODEL_ID = "Tongyi-MAI/Z-Image-Turbo"
+ZIMAGE_INFERENCE_STEPS = 8
+ZIMAGE_GUIDANCE_SCALE = 1.0
+# 512 instead of 1024 — at 768 we observed 12 GB VRAM pinned at 96 % and
+# silent paging (70 s / step, leak across images). 512 cuts activations
+# another ~2.25 × so the GPU has actual headroom. Stickers get cropped to
+# content + 20 px padding so 512 inputs typically yield 300-450 px outputs,
+# which is still oversized vs how SemanticVibe uses them on a 720 p canvas.
+ZIMAGE_HEIGHT = 512
+ZIMAGE_WIDTH = 512
+
 DALLE_MODEL = "dall-e-3"
 DALLE_SIZE = "1024x1024"
+
+
+def _safe_adapter_name(idx: int, lora_path: Path) -> str:
+    """diffusers requires adapter names to be valid Python identifiers."""
+    sanitised = re.sub(r"[^a-zA-Z0-9]", "_", lora_path.stem)[:32].strip("_") or "lora"
+    return f"adapter_{idx}_{sanitised}"
 
 
 # ---- Config dataclasses -----------------------------------------------------
@@ -148,19 +167,7 @@ def load_sdxl_pipeline(loras_dir: Path, lora_scale: float):
     # SDXL + a small LoRA + rembg coexisting on a 12 GB card.
     pipe.enable_model_cpu_offload()
 
-    if loras_dir.exists():
-        loras = sorted(loras_dir.glob("*.safetensors"))
-        for i, lora in enumerate(loras):
-            adapter_name = f"adapter_{i}_{lora.stem}"
-            log.info("Loading LoRA %s as %s", lora.name, adapter_name)
-            pipe.load_lora_weights(str(lora), adapter_name=adapter_name)
-        if loras:
-            pipe.set_adapters([f"adapter_{i}_{lora.stem}" for i, lora in enumerate(loras)],
-                              adapter_weights=[lora_scale] * len(loras))
-        else:
-            log.warning("No LoRA found in %s — running base SDXL only.", loras_dir)
-    else:
-        log.warning("LoRA dir %s does not exist — running base SDXL only.", loras_dir)
+    _attach_loras(pipe, loras_dir, lora_scale, label="SDXL")
     return pipe
 
 
@@ -178,6 +185,98 @@ def sdxl_generate(pipe, prompt: str, seed: int):
         width=SDXL_WIDTH,
     )
     return result.images[0]
+
+
+# ---- Backend: Z-Image Turbo -------------------------------------------------
+
+
+def load_zimage_pipeline(loras_dir: Path, lora_scale: float, *, cpu_offload: bool = False):
+    """Load Z-Image-Turbo + every LoRA found under `loras_dir`.
+
+    Z-Image is a 6B-param DiT model. At bf16 the weights sit at ~12 GB,
+    which is right at the edge of an RTX 3060 12 GB. We default to
+    *no* cpu_offload because the offload path runs ~10 min per image
+    (the transformer keeps shuttling between CPU and GPU per step). At
+    768×768 the activations fit alongside the weights on a 12 GB card.
+
+    cpu_offload=True is the slow-but-safe fallback if the GPU OOMs.
+    """
+    import torch
+    from diffusers import ZImagePipeline
+
+    log.info(
+        "Loading Z-Image Turbo pipeline (%s, cpu_offload=%s)…",
+        ZIMAGE_MODEL_ID,
+        cpu_offload,
+    )
+    pipe = ZImagePipeline.from_pretrained(
+        ZIMAGE_MODEL_ID,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=False,
+    )
+    if cpu_offload:
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("cuda")
+    _attach_loras(pipe, loras_dir, lora_scale, label="Z-Image")
+    return pipe
+
+
+def zimage_generate(pipe, prompt: str, seed: int):
+    """Generate a single image via Z-Image Turbo. CFG ≈ 1.0 because the
+    Turbo distillation removed CFG dependency; higher values tend to
+    over-saturate.
+    """
+    import torch
+
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    try:
+        result = pipe(
+            prompt=prompt,
+            negative_prompt=NEGATIVE_PROMPT,
+            num_inference_steps=ZIMAGE_INFERENCE_STEPS,
+            guidance_scale=ZIMAGE_GUIDANCE_SCALE,
+            generator=generator,
+            height=ZIMAGE_HEIGHT,
+            width=ZIMAGE_WIDTH,
+        )
+    except TypeError:
+        # Some Turbo distillations drop negative_prompt support.
+        result = pipe(
+            prompt=prompt,
+            num_inference_steps=ZIMAGE_INFERENCE_STEPS,
+            guidance_scale=ZIMAGE_GUIDANCE_SCALE,
+            generator=generator,
+            height=ZIMAGE_HEIGHT,
+            width=ZIMAGE_WIDTH,
+        )
+    return result.images[0]
+
+
+# ---- Shared LoRA loading ----------------------------------------------------
+
+
+def _attach_loras(pipe, loras_dir: Path, lora_scale: float, *, label: str) -> None:
+    """Discover every .safetensors under `loras_dir` and load them as adapters.
+
+    Adapter names are sanitised because diffusers requires Python-identifier
+    style ([a-zA-Z0-9_]). Filenames like `[ZImage.Turbo]Doodle_Redmond` would
+    otherwise blow up at load time.
+    """
+    if not loras_dir.exists():
+        log.warning("LoRA dir %s does not exist — running base %s only.", loras_dir, label)
+        return
+    loras = sorted(loras_dir.glob("*.safetensors"))
+    if not loras:
+        log.warning("No LoRA found in %s — running base %s only.", loras_dir, label)
+        return
+    adapter_names: list[str] = []
+    for i, lora in enumerate(loras):
+        adapter_name = _safe_adapter_name(i, lora)
+        log.info("Loading %s LoRA %s as %s", label, lora.name, adapter_name)
+        pipe.load_lora_weights(str(lora), adapter_name=adapter_name)
+        adapter_names.append(adapter_name)
+    pipe.set_adapters(adapter_names, adapter_weights=[lora_scale] * len(adapter_names))
 
 
 # ---- Backend: DALL-E --------------------------------------------------------
@@ -282,9 +381,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed-base", type=int, default=42)
     p.add_argument(
         "--backend",
-        choices=["auto", "sdxl", "dalle"],
+        choices=["auto", "sdxl", "zimage", "dalle"],
         default="auto",
-        help="auto = SDXL when CUDA is available, otherwise DALL-E.",
+        help="auto = SDXL when CUDA is available, otherwise DALL-E. Use "
+        "'zimage' for Z-Image Turbo (6B DiT, 8 NFE, requires zimage-tuned LoRAs).",
+    )
+    p.add_argument(
+        "--zimage-cpu-offload",
+        action="store_true",
+        help="Z-Image only: enable model_cpu_offload (slow but safe on <12 GB GPUs). "
+        "Default off — the script auto-falls-back to offload on CUDA OOM.",
     )
     p.add_argument(
         "--dry-run",
@@ -333,6 +439,19 @@ def main(argv: list[str] | None = None) -> int:
     pipe = None
     if backend == "sdxl":
         pipe = load_sdxl_pipeline(args.loras_dir, args.lora_scale)
+    elif backend == "zimage":
+        try:
+            pipe = load_zimage_pipeline(
+                args.loras_dir, args.lora_scale, cpu_offload=args.zimage_cpu_offload
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Catches CUDA OOM (torch.cuda.OutOfMemoryError) + import errors.
+            log.warning(
+                "Z-Image load failed (%s) — retrying with cpu_offload=True", exc
+            )
+            pipe = load_zimage_pipeline(
+                args.loras_dir, args.lora_scale, cpu_offload=True
+            )
     elif backend == "dalle":
         if not os.environ.get("OPENAI_API_KEY"):
             log.error("DALL-E backend requires OPENAI_API_KEY in the environment.")
@@ -364,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     if backend == "sdxl":
                         raw = sdxl_generate(pipe, prompt, seed)
+                    elif backend == "zimage":
+                        raw = zimage_generate(pipe, prompt, seed)
                     else:
                         raw = dalle_generate(prompt)
                     nobg = remove_background(raw)

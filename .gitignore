@@ -16,14 +16,15 @@ htmlcov/
 # Project data (rebuild via data/README.md)
 data/assets_lib/*.png
 data/assets_lib/*.jpg
+data/assets_lib/_procedural_backup/
 data/test_videos/*.mp4
 data/test_videos/*.mov
 data/fonts/*.ttf
 data/fonts/*.otf
 outputs/
 
-# SDXL-generated stickers (rebuild via scripts/generate_stickers.py)
-assets/stickers/
+# SDXL / Z-Image-generated stickers (rebuild via scripts/generate_stickers.py)
+assets/
 loras/
 failed.log
 

@@ -38,7 +38,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov", "ruff", "nbstripout"]
-sdxl = ["diffusers>=0.27", "accelerate", "rembg"]
+sdxl = ["diffusers>=0.27", "accelerate", "rembg", "peft>=0.7"]
 
 [project.scripts]
 semanticvibe = "semanticvibe.cli:main"
