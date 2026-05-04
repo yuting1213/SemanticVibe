@@ -22,6 +22,11 @@ data/fonts/*.ttf
 data/fonts/*.otf
 outputs/
 
+# SDXL-generated stickers (rebuild via scripts/generate_stickers.py)
+assets/stickers/
+loras/
+failed.log
+
 # Models / caches
 models/
 *.bin

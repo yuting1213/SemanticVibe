@@ -1,0 +1,102 @@
+[
+  {
+    "category": "heart",
+    "variants": [
+      {"name": "heart_outline_pink",   "color_hint": "hot pink #FF6B9D, outline only no fill"},
+      {"name": "heart_solid_red",      "color_hint": "solid red #E63946, small, slightly imperfect"},
+      {"name": "heart_double_magenta", "color_hint": "magenta and pink #E63946, double-traced outline"}
+    ]
+  },
+  {
+    "category": "lightning",
+    "variants": [
+      {"name": "lightning_yellow",     "color_hint": "yellow #FFE066 with thick black outline, jagged"},
+      {"name": "lightning_blue",       "color_hint": "electric blue #3A86FF outline only"}
+    ]
+  },
+  {
+    "category": "star",
+    "variants": [
+      {"name": "star_outline_yellow",  "color_hint": "warm yellow #FFE066, outline only"},
+      {"name": "star_filled_pink",     "color_hint": "soft pink #FF80AB, filled, slightly tilted"}
+    ]
+  },
+  {
+    "category": "sparkle",
+    "variants": [
+      {"name": "sparkle_white",        "color_hint": "white with thin black outline, four-point burst"},
+      {"name": "sparkle_yellow",       "color_hint": "yellow #FFE066 outline, eight-point burst"}
+    ]
+  },
+  {
+    "category": "flower",
+    "variants": [
+      {"name": "flower_daisy",         "color_hint": "white petals with yellow center, simple daisy"},
+      {"name": "flower_cherry",        "color_hint": "pale pink #FFB7C5 cherry blossom, five petals"}
+    ]
+  },
+  {
+    "category": "cloud",
+    "variants": [
+      {"name": "cloud_outline_blue",   "color_hint": "soft blue #C8E7FF outline only, fluffy"}
+    ]
+  },
+  {
+    "category": "sun",
+    "variants": [
+      {"name": "sun_yellow_face",      "color_hint": "yellow #FFE066 with smiling face, radiating lines"},
+      {"name": "sun_outline",          "color_hint": "warm orange #F4A261 outline only"}
+    ]
+  },
+  {
+    "category": "moon",
+    "variants": [
+      {"name": "moon_crescent",        "color_hint": "pale yellow #FFF1B6, crescent shape, sleepy face"}
+    ]
+  },
+  {
+    "category": "arrow",
+    "variants": [
+      {"name": "arrow_pink_wobble",    "color_hint": "hot pink #FF6B9D, hand-drawn squiggly shaft"},
+      {"name": "arrow_dashed_white",   "color_hint": "white with black outline, dashed line shaft"}
+    ]
+  },
+  {
+    "category": "speech_bubble",
+    "variants": [
+      {"name": "bubble_round_white",   "color_hint": "white fill with thick black outline, round bubble"},
+      {"name": "bubble_spiky_yellow",  "color_hint": "yellow #FFE066, jagged comic-burst bubble shape"}
+    ]
+  },
+  {
+    "category": "music_note",
+    "variants": [
+      {"name": "note_eighth_purple",   "color_hint": "deep purple #8338EC, single eighth note"},
+      {"name": "note_double_pink",     "color_hint": "pink #FF6B9D, paired eighth notes"}
+    ]
+  },
+  {
+    "category": "ribbon",
+    "variants": [
+      {"name": "ribbon_red_bow",       "color_hint": "red #E63946 ribbon tied in a bow"}
+    ]
+  },
+  {
+    "category": "fire",
+    "variants": [
+      {"name": "fire_orange_flame",    "color_hint": "orange #FF6B35 flame with yellow #FFE066 inner core"}
+    ]
+  },
+  {
+    "category": "teardrop",
+    "variants": [
+      {"name": "teardrop_blue",        "color_hint": "soft blue #C8E7FF, teardrop shape, outline only"}
+    ]
+  },
+  {
+    "category": "exclaim",
+    "variants": [
+      {"name": "exclaim_red_burst",    "color_hint": "red #E63946 jagged impact star, comic-book style"}
+    ]
+  }
+]
