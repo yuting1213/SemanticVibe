@@ -12,8 +12,22 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-# Animation set — keep in sync with semanticvibe.render.animations dispatch.
-AnimationName = Literal["bounce_in", "typewriter", "wiggle", "draw_in", "fade"]
+# Entry animation set — keep in sync with semanticvibe.render.animations.REGISTRY.
+# The first 5 are the legacy v1 set (committed example JSONs reference them);
+# the rest are the v4 IG-Reels-style expansion.
+AnimationName = Literal[
+    "bounce_in", "typewriter", "wiggle", "draw_in", "fade",
+    "scale_pop", "drop_in",
+    "slide_in_left", "slide_in_right", "slide_in_top", "slide_in_bottom",
+    "stamp", "wobble_in", "spin_in",
+]
+
+# Idle (steady-state) animation — layered on top of the entry envelope between
+# entry-end and exit-start. "none" = stay still after entry settles.
+# Keep in sync with semanticvibe.render.idle_animations.REGISTRY.
+IdleAnimationName = Literal[
+    "none", "pulse", "wiggle", "drift", "rotate_slow", "shimmer",
+]
 
 # (x, y) in pixel coordinates of the output frame, top-left origin.
 PixelAnchor = tuple[int, int]
@@ -67,6 +81,13 @@ class TextElement(_ElementBase):
         "the existing outline. Empty list = single outline (the legacy default).",
     )
     animation: AnimationName
+    idle_animation: IdleAnimationName = Field(
+        default="none",
+        description="Steady-state modulation layered on top of the entry "
+        "envelope between entry-end and exit-start. Lets a settled element "
+        "keep moving (pulse / drift / shimmer / etc.) without re-triggering "
+        "the entry animation.",
+    )
     rotation_jitter: float = Field(
         default=0.0, description="Max rotation in degrees applied as random jitter."
     )
@@ -145,8 +166,19 @@ class DecorationElement(_ElementBase):
     wiggle_amp: float = Field(
         default=0.0,
         ge=0,
-        description="Steady-state position wiggle amplitude (pixels) — adds "
-        "ambient hand-drawn instability so decorations don't sit dead-still.",
+        description="Steady-state position wiggle amplitude (pixels) — legacy "
+        "field, prefer the unified `idle_animation='wiggle'` going forward. "
+        "Both compose additively so authored JSONs that set wiggle_amp keep "
+        "working.",
+    )
+    animation: AnimationName = Field(
+        default="fade",
+        description="Entry animation. Defaults to 'fade' to match the v1 "
+        "decoration behaviour where this field didn't exist.",
+    )
+    idle_animation: IdleAnimationName = Field(
+        default="none",
+        description="Steady-state modulation, same semantics as TextElement's.",
     )
 
     @field_validator("scatter_zone", mode="before")
@@ -193,6 +225,13 @@ class HeroTextElement(_ElementBase):
         default=True,
         description="If True, scatter small white dots/lines on top of the "
         "fill to simulate chalk dust.",
+    )
+    idle_animation: IdleAnimationName = Field(
+        default="none",
+        description="Optional idle modulation. Note: HeroTextElement already "
+        "supports `breathing` (a built-in scale pulse on a fixed period). "
+        "Setting idle_animation='pulse' is roughly equivalent; pick one to "
+        "avoid double-modulating.",
     )
 
     @field_validator("pos", mode="before")

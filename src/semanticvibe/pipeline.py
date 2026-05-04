@@ -61,6 +61,23 @@ def run(
             decision.model_dump_json(indent=2), encoding="utf-8"
         )
 
+    # Stage 2b: beat-driven animation randomization.
+    # Snaps each element's start_time to the nearest beat (max 0.15 s) and
+    # picks a beat-appropriate entry+idle animation. Kept outside of decide()
+    # because it needs the audio (for downbeat energy classification) — the
+    # LLM only ever sees text, so this enrichment lives at the pipeline level.
+    log.info("Stage 2b (beat sync + animation assignment)…")
+    if progress_cb: progress_cb("stage 2b/5: syncing animations to beats")
+    from semanticvibe.llm.anim_assignment import assign_random_animations
+    from semanticvibe.preprocess.beat_sync import BeatInfo
+
+    beat_info = BeatInfo.from_video(video_path)
+    decision = assign_random_animations(decision, beat_info)
+    if intermediate_dir is not None:
+        (intermediate_dir / "decision_animated.json").write_text(
+            decision.model_dump_json(indent=2), encoding="utf-8"
+        )
+
     # Stage 4: layout — resolve "auto" anchors against the FINAL rendered
     # canvas size (i.e. account for the preview downscale). Otherwise layout
     # picks coordinates valid only in the source resolution and the renderer

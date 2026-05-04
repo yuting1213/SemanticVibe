@@ -1,0 +1,72 @@
+{
+  "elements": [
+    {
+      "type": "hero_text",
+      "content": "夢",
+      "start_time": 3.0,
+      "end_time": 10.0,
+      "pos": "upper_left",
+      "size": 320,
+      "color": "#FFFFFF",
+      "halo_color": "#FFFFFF",
+      "style": "chalk",
+      "breathing": true,
+      "grain": true,
+      "font": "KleeOne-SemiBold",
+      "reasoning": "Hero glyph upper-left so it doesn't compete with the centred subject. Breathing scale + chalk halo + grain — calmer than the sticker stack below."
+    },
+
+    {
+      "type": "decoration",
+      "asset_tag": "heart",
+      "start_time": 2.5,
+      "end_time": 13.5,
+      "scale_jitter": 0.05,
+      "rotation_jitter": 8.0,
+      "count": 1,
+      "scatter": true,
+      "scatter_zone": [60, 220, 340, 480],
+      "size_steps": [200],
+      "color_tint": ["#FF6B9D"],
+      "animation": "scale_pop",
+      "idle_animation": "pulse",
+      "reasoning": "One large pink hand-drawn heart in the upper-left zone, scale-pops in on entry then pulses softly. The cluster's visual anchor."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "mini-heart",
+      "start_time": 3.0,
+      "end_time": 13.5,
+      "scale_jitter": 0.1,
+      "rotation_jitter": 12.0,
+      "count": 3,
+      "scatter": true,
+      "scatter_zone": [60, 220, 340, 700],
+      "size_steps": [80, 80, 80],
+      "color_tint": ["#FF6B9D"],
+      "animation": "drop_in",
+      "idle_animation": "drift",
+      "reasoning": "Three medium pink hearts drop in from above with bouncy settle, then slowly drift in figure-eight loops."
+    },
+    {
+      "type": "decoration",
+      "asset_tag": "mini-heart",
+      "start_time": 4.5,
+      "end_time": 13.5,
+      "scale_jitter": 0.15,
+      "rotation_jitter": 18.0,
+      "count": 4,
+      "scatter": true,
+      "scatter_zone": [60, 220, 340, 700],
+      "size_steps": [40, 40, 40, 40],
+      "color_tint": ["#E63946"],
+      "animation": "stamp",
+      "idle_animation": "wiggle",
+      "reasoning": "Four small red hearts stamp in (1.5→1 + ±5° wobble) staggered across the cluster, then keep their hand-drawn ambient wiggle."
+    }
+  ],
+  "global_style": {
+    "color_palette": ["#FF6B9D", "#E63946", "#FFFFFF"],
+    "vibe": "minimal hand-drawn picturebook with IG-Reels animation pacing — pink + red + white only, single chalk hero glyph upper-left, clustered outlined hearts cascade in (scale_pop → drop_in → stamp) with idle pulse / drift / wiggle keeping everything alive"
+  }
+}

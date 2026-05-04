@@ -15,7 +15,8 @@ from PIL import Image
 
 from semanticvibe.assets.clip_search import find_asset
 from semanticvibe.assets.library import AssetLibrary
-from semanticvibe.render.animations import AnimationState, evaluate
+from semanticvibe.render import idle_animations
+from semanticvibe.render.animations import AnimationState, ENTRY_DURATION, EXIT_DURATION, evaluate
 from semanticvibe.render.hero_text import render_hero
 from semanticvibe.render.text_render import fit_to_canvas, measure_text, render_text
 from semanticvibe.schemas.decision import (
@@ -246,12 +247,29 @@ def _prepare_decoration_copies(
             x, y = anchor
             x += i * 6
             y += i * 6
+            # Push single-anchor decorations out of the central subject strip
+            # too. Without this, the heuristic's chorus star regularly
+            # ended up sitting on the singer's face. Author-zoned scatters
+            # already opt out of this push above; near_text_id placements
+            # we trust because the author explicitly tied the decoration to
+            # a specific text element.
+            if element.near_text_id is None:
+                tw, th = tile.size
+                pushed = _push_outside_person_bbox(
+                    (x, y, x + tw, y + th), canvas_size,
+                )
+                x, y = pushed[0], pushed[1]
             out.append((tile, (x, y)))
     return out
 
 
 def _ambient_wiggle_offset(now: float, seed: int, amp: float) -> tuple[int, int]:
-    """Steady-state ±amp pixel offset, oscillating at ~1 Hz, deterministic per-seed."""
+    """Steady-state ±amp pixel offset, oscillating at ~1 Hz, deterministic per-seed.
+
+    Legacy support for `DecorationElement.wiggle_amp`. New JSONs should
+    prefer `idle_animation: 'wiggle'` which composes through the unified
+    idle pipeline.
+    """
     if amp <= 0:
         return (0, 0)
     rng = random.Random(seed)
@@ -260,6 +278,43 @@ def _ambient_wiggle_offset(now: float, seed: int, amp: float) -> tuple[int, int]
     dx = math.sin(now * 2 * math.pi * 1.0 + phase_x) * amp
     dy = math.cos(now * 2 * math.pi * 0.85 + phase_y) * amp
     return (int(round(dx)), int(round(dy)))
+
+
+def _compose_idle(
+    state: AnimationState,
+    *,
+    idle_name: str,
+    now: float,
+    start: float,
+    end: float,
+    seed: int,
+) -> AnimationState:
+    """Layer an idle animation on top of an entry-animation `AnimationState`.
+
+    Idle modulation is only applied during the *steady-state* portion of
+    the visible window — between `start + ENTRY_DURATION` and
+    `end - EXIT_DURATION`. During entry/exit transitions the entry curve
+    owns the look and idle would fight it.
+    """
+    if idle_name == "none" or idle_name is None:
+        return state
+    duration = end - start
+    entry_end = start + min(ENTRY_DURATION, duration / 2)
+    exit_start = end - min(EXIT_DURATION, duration / 2)
+    if now < entry_end or now > exit_start:
+        return state
+
+    idle = idle_animations.evaluate(
+        idle_name, t_since_start=now - start, seed=seed,
+    )
+    return AnimationState(
+        alpha=state.alpha * idle.alpha_mul,
+        scale=state.scale * idle.scale_mul,
+        dx=state.dx + idle.dx,
+        dy=state.dy + idle.dy,
+        rotation_deg=state.rotation_deg + idle.rotation_deg,
+        reveal_fraction=state.reveal_fraction,
+    )
 
 
 def _resolve_decoration_anchor(
@@ -363,15 +418,26 @@ def _make_frame_factory(
                 _paste_rgba(canvas, tile, top_left)
                 continue
 
-            anim_name = element.animation if isinstance(element, TextElement) else "fade"
-            state: AnimationState = evaluate(
+            # Pick entry animation: TextElement and DecorationElement both
+            # carry `animation`; Decoration's defaults to "fade" via schema.
+            anim_name = element.animation
+            entry_state: AnimationState = evaluate(
                 anim_name,
                 now=t,
                 start=element.start_time,
                 end=element.end_time,
             )
-            if state.alpha <= 0:
+            if entry_state.alpha <= 0:
                 continue
+            # Layer idle modulation if set + we're in the steady-state region.
+            state = _compose_idle(
+                entry_state,
+                idle_name=element.idle_animation,
+                now=t,
+                start=element.start_time,
+                end=element.end_time,
+                seed=idx,
+            )
 
             if isinstance(element, TextElement):
                 tile = render_text(fitted_text[idx], state, fonts_dir)
@@ -382,14 +448,35 @@ def _make_frame_factory(
                 if not copies:
                     continue  # missing asset — silently skip
                 for copy_idx, (base_tile, (cx, cy)) in enumerate(copies):
-                    tile = _apply_alpha(base_tile, state.alpha)
-                    # Per-copy ambient wiggle so each piece bobs at its own
-                    # phase — reads as hand-drawn instability, not a
-                    # uniform shake.
-                    dx, dy = _ambient_wiggle_offset(
-                        t, seed=idx * 1000 + copy_idx, amp=element.wiggle_amp
+                    # Each copy gets its own idle seed so a flock doesn't move
+                    # in lockstep. State.scale + state.rotation_deg apply once
+                    # per element though, so we re-use the entry state and
+                    # only re-evaluate idle for per-copy phase variety.
+                    copy_state = _compose_idle(
+                        entry_state,
+                        idle_name=element.idle_animation,
+                        now=t,
+                        start=element.start_time,
+                        end=element.end_time,
+                        seed=idx * 1000 + copy_idx,
                     )
-                    _paste_rgba(canvas, tile, (cx + dx, cy + dy))
+                    tile = base_tile
+                    if copy_state.scale != 1.0:
+                        new_w = max(1, int(round(tile.width * copy_state.scale)))
+                        new_h = max(1, int(round(tile.height * copy_state.scale)))
+                        tile = tile.resize((new_w, new_h), Image.LANCZOS)
+                    if copy_state.rotation_deg:
+                        tile = tile.rotate(
+                            copy_state.rotation_deg, resample=Image.BICUBIC, expand=True,
+                        )
+                    tile = _apply_alpha(tile, copy_state.alpha)
+                    # Legacy wiggle_amp still composes additively for old JSONs.
+                    legacy_dx, legacy_dy = _ambient_wiggle_offset(
+                        t, seed=idx * 1000 + copy_idx, amp=element.wiggle_amp,
+                    )
+                    final_x = cx + int(round(copy_state.dx)) + legacy_dx
+                    final_y = cy + int(round(copy_state.dy)) + legacy_dy
+                    _paste_rgba(canvas, tile, (final_x, final_y))
 
         return np.asarray(canvas.convert("RGB"))
 
