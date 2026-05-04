@@ -107,7 +107,11 @@ def load_config(path: Path) -> list[CategorySpec]:
 
 
 def build_prompt(category: str, color_hint: str) -> str:
-    return PROMPT_TEMPLATE.format(category=category, color_hint=color_hint)
+    # Underscores in category names (e.g. "speech_bubble") confuse SDXL's
+    # tokenizer — it reads them as a single oddball token. Replace with
+    # spaces so "music_note" becomes "music note" in the prompt.
+    readable = category.replace("_", " ")
+    return PROMPT_TEMPLATE.format(category=readable, color_hint=color_hint)
 
 
 # ---- Backend: SDXL ----------------------------------------------------------
