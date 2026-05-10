@@ -171,6 +171,26 @@ class DecorationElement(_ElementBase):
         "Both compose additively so authored JSONs that set wiggle_amp keep "
         "working.",
     )
+    prefer_color_bucket: str | None = Field(
+        default=None,
+        description="Optional colour-bucket hint passed to AssetRetriever "
+        "(e.g. 'pink', 'green'). Narrows the candidate pool for this "
+        "decoration's PNG; falls back to the default colour-balanced pick "
+        "when no PNG in the requested bucket exists.",
+    )
+    pixel_anchor: PixelAnchor | None = Field(
+        default=None,
+        description="v10: explicit (x, y) top-left pixel position chosen "
+        "by the forbidden-map layout. When set the renderer uses this "
+        "directly and skips the near_text_id heuristic.",
+    )
+
+    @field_validator("pixel_anchor", mode="before")
+    @classmethod
+    def _pixel_anchor_from_list(cls, v):
+        if isinstance(v, list) and len(v) == 2:
+            return tuple(v)
+        return v
     animation: AnimationName = Field(
         default="fade",
         description="Entry animation. Defaults to 'fade' to match the v1 "
@@ -245,6 +265,44 @@ class HeroTextElement(_ElementBase):
 SubtitlePosition = Literal["top_banner", "bottom_banner", "center"]
 
 
+class SubtitleOutlinedElement(_ElementBase):
+    """v10 subtitle: pure text with thick outline + optional shadow.
+
+    No background chip — the lyric reads as overlay text against the
+    raw video. Uses a circular thick-outline implementation (multiple
+    offset draws within a radius) for the けんぱ-style cute look.
+
+    The optional `outline_color_alt` lets per-instance composition
+    alternate two outline colours (caller picks which one to use; the
+    renderer just draws whatever `outline_color` is set to).
+    """
+
+    type: Literal["subtitle_outlined"] = "subtitle_outlined"
+    content: str = Field(min_length=1)
+    position: SubtitlePosition = "top_banner"
+    font: str = Field(default="KleeOne-SemiBold")
+    size: int = Field(default=64, gt=0)
+    text_color: str = "#FFFFFF"
+    outline_color: str = "#FF6B9D"
+    outline_width: int = Field(default=6, ge=0)
+    shadow_offset: int = Field(default=2, ge=0,
+        description="Drop-shadow offset in pixels. 0 = no shadow.")
+    shadow_alpha: int = Field(default=120, ge=0, le=255)
+    shadow_color: str = "#000000"
+    margin: int = Field(default=16, ge=0)
+    max_width_ratio: float = Field(default=0.85, gt=0, le=1.0)
+    wrap_lines: bool = Field(
+        default=True,
+        description="When the rendered tile would exceed canvas_w * "
+        "max_width_ratio, attempt to break the text into up to `max_lines` "
+        "lines BEFORE shrinking the font. Mandarin/Japanese/Korean wrap "
+        "anywhere; Latin/Cyrillic wraps at spaces only.",
+    )
+    max_lines: int = Field(default=2, ge=1, le=4)
+    line_spacing: float = Field(default=1.15, gt=0,
+        description="Multiplier on the font's natural line height.")
+
+
 class SubtitleBannerElement(_ElementBase):
     """One full-line lyric chip — the baseline3-vibe rendering for v7.
 
@@ -275,7 +333,13 @@ class SubtitleBannerElement(_ElementBase):
 
 
 Element = Annotated[
-    Union[TextElement, DecorationElement, HeroTextElement, SubtitleBannerElement],
+    Union[
+        TextElement,
+        DecorationElement,
+        HeroTextElement,
+        SubtitleBannerElement,
+        SubtitleOutlinedElement,
+    ],
     Field(discriminator="type"),
 ]
 
@@ -283,6 +347,10 @@ Element = Annotated[
 class GlobalStyle(BaseModel):
     color_palette: list[str] = Field(min_length=1)
     vibe: str = Field(min_length=1)
+    # v9: when set, the renderer drives the `pulse` idle animation off this
+    # period (in seconds) instead of the default 1.5s — synchronises the
+    # on-screen breathing with the music's tempo.
+    beat_period_sec: float | None = Field(default=None, gt=0)
 
 
 class Decision(BaseModel):

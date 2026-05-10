@@ -193,6 +193,87 @@ KEYWORD_TO_TAGS: dict[str, list[str]] = {
     "arrow":     ["arrow"],
     "→":          ["arrow"],
     "look":      ["arrow"],
+
+    # ----- animals -----
+    "cat":       ["animal"],
+    "dog":       ["animal"],
+    "bear":      ["animal"],
+    "bird":      ["animal"],
+    "fish":      ["animal"],
+    "frog":      ["animal"],
+    "猫":        ["animal"],
+    "犬":        ["animal"],
+    "鳥":        ["animal"],
+    "魚":        ["animal"],
+    "貓":        ["animal"],
+    "鳥兒":      ["animal"],
+    "ペット":    ["animal"],
+    "pet":       ["animal"],
+
+    # ----- food (general) -----
+    "food":      ["food"],
+    "eat":       ["food"],
+    "meal":      ["food"],
+    "bread":     ["food"],
+    "cheese":    ["food"],
+    "sushi":     ["food"],
+    "snack":     ["food"],
+    "飯":        ["food"],
+    "食":        ["food"],
+    "ご飯":       ["food"],
+
+    # ----- fruit -----
+    "fruit":     ["fruit"],
+    "apple":     ["fruit"],
+    "cherry":    ["fruit"],
+    "grapes":    ["fruit"],
+    "banana":    ["fruit"],
+    "蘋果":      ["fruit"],
+    "果":        ["fruit"],
+    "いちご":     ["fruit"],
+    "berry":     ["fruit"],
+    "甜美":      ["fruit"],
+
+    # ----- icecream -----
+    "ice cream": ["icecream"],
+    "icecream":  ["icecream"],
+    "popsicle":  ["icecream"],
+    "アイス":     ["icecream"],
+    "アイスクリーム": ["icecream"],
+    "冰淇淋":    ["icecream"],
+    "雪糕":      ["icecream"],
+    "dessert":   ["icecream"],
+
+    # ----- numbers / typographic emphasis -----
+    "1":         ["numbers"],
+    "2":         ["numbers"],
+    "3":         ["numbers"],
+    "4":         ["numbers"],
+    "5":         ["numbers"],
+    "6":         ["numbers"],
+    "7":         ["numbers"],
+    "8":         ["numbers"],
+    "9":         ["numbers"],
+    "0":         ["numbers"],
+    "first":     ["numbers"],
+    "second":    ["numbers"],
+    "count":     ["numbers"],
+
+    # ----- transport -----
+    "car":       ["transport"],
+    "bus":       ["transport"],
+    "train":     ["transport"],
+    "plane":     ["transport"],
+    "ship":      ["transport"],
+    "boat":      ["transport"],
+    "bike":      ["transport"],
+    "車":        ["transport"],
+    "電車":       ["transport"],
+    "飛行機":     ["transport"],
+    "船":        ["transport"],
+    "旅":        ["transport"],
+    "journey":   ["transport"],
+    "travel":    ["transport"],
 }
 
 # Defensive — every tag in KEYWORD_TO_TAGS must be in the closed vocab.
@@ -229,6 +310,25 @@ class Highlight(BaseModel):
     primary_tag: str | None = None
     reasoning: str = ""
     duration: float | None = Field(default=None, gt=0)
+    # ---- v8: LLM-driven animation + colour direction ----
+    entry_animation: str | None = Field(
+        default=None,
+        description="Optional entry-animation hint from the LLM. Must be a "
+        "name from the entry registry; otherwise build_decision falls back "
+        "to a strength-bucketed random pick.",
+    )
+    idle_animation: str | None = Field(
+        default=None,
+        description="Optional idle-animation hint. Must be in the idle "
+        "registry, else build_decision falls back to its random pool.",
+    )
+    decoration_color_hint: str | None = Field(
+        default=None,
+        description="Optional colour-bucket hint for the picked decoration "
+        "PNG (e.g. 'pink', 'green', 'yellow'). The retriever uses this to "
+        "narrow the candidate pool; if no PNG matches the hint within the "
+        "tag the request falls through to the regular palette-balanced pick.",
+    )
 
     # Backward-compat alias: older callers used .lyric_time / .lyric_text.
     @property
@@ -380,8 +480,11 @@ def _save_cache(key: str, result: AlignmentResult) -> None:
 _CLAUDE_SYSTEM_PROMPT = """You are an art director for animated lyric music videos.
 
 Given a list of lyric lines and (optionally) a song title, decide which lines
-deserve a visual highlight on screen. For each highlight, choose decoration
-sticker tags from the CLOSED vocabulary below — you may NOT invent new tags.
+deserve a visual highlight on screen. For each highlight, choose:
+1. decoration sticker tags from the CLOSED vocabulary
+2. an entry animation that fits the line's emotional moment
+3. an idle animation that fits the line's mood
+4. (optional) a colour-bucket hint to bias which PNG variant we pick
 
 Output STRICT JSON. No prose, no markdown fences, no explanations outside the
 JSON. The schema is:
@@ -389,26 +492,64 @@ JSON. The schema is:
 {
   "highlights": [
     {
-      "time":        <float, copy from input>,
-      "text":        <string, copy or shorten the lyric for impact>,
-      "is_hook":     <bool, true for the song's punchiest 1-3 moments>,
-      "tags":        [<tag>, <tag>, ...],     // 0-3 tags from the closed list
-      "primary_tag": <tag or null>,           // null when tags == []
-      "reasoning":   <one sentence on the choice>
+      "time":                  <float, copy from input>,
+      "text":                  <string, copy or shorten the lyric for impact>,
+      "is_hook":               <bool, true for the song's punchiest 1-3 moments>,
+      "tags":                  [<tag>, <tag>, ...],   // 0-3 tags from the closed list
+      "primary_tag":           <tag or null>,         // null when tags == []
+      "entry_animation":       <one of the entry-animation names below>,
+      "idle_animation":        <one of the idle-animation names below>,
+      "decoration_color_hint": <one of the colour buckets below, or null>,
+      "reasoning":             <one sentence on the artistic choices>
     }
   ],
   "non_hooks": [<lyric texts that you did NOT highlight>]
 }
 
-Closed vocabulary (id — category — meaning):
+Closed sticker vocabulary (id — category — meaning):
 {vocab_block}
+
+Entry animations (pick the one that fits the line's *moment*):
+  - fade           — soft, no motion. For tender / quiet lines.
+  - bounce_in      — playful spring. For cute, light-hearted lines.
+  - typewriter     — characters reveal one-by-one. For statements, declarations.
+  - draw_in        — line-by-line ink reveal. For deliberate, written-feeling lines.
+  - wiggle         — gentle wobble in. For shy / uncertain lines.
+  - scale_pop      — pops from small to big with overshoot. For punchy hooks.
+  - drop_in        — falls in from above with bounce. For surprising / dramatic lines.
+  - slide_in_left  — slides in from left. For "incoming" feeling.
+  - slide_in_right — slides in from right.
+  - slide_in_top   — slides in from top. Good for sky / heavenly themes.
+  - slide_in_bottom— slides in from bottom. Good for emerging / rising themes.
+  - stamp          — slams down with shake. For impact / declaration.
+  - wobble_in      — wobble + scale up. For excited, off-balance feelings.
+  - spin_in        — spins in 360°. For magical / transformative moments.
+
+Idle animations (the steady-state behaviour after entry settles):
+  - none           — stays still. For statements you want held firmly.
+  - pulse          — subtle scale breathing. Default for "alive" feeling.
+  - wiggle         — high-frequency tiny shake. For nervous / energetic lines.
+  - drift          — slow horizontal/vertical drift. For floating / dreamy lines.
+  - rotate_slow    — continuous slow rotation. For magical / hypnotic loops.
+  - shimmer        — opacity flicker. For sparkly / fading-glow feelings.
+
+Decoration colour-bucket hints (optional, narrows the PNG pick):
+  - red / pink / orange / yellow / green / cyan / blue / purple
+  - white / grey / black / brown
+  - null — let the renderer pick the most palette-balanced variant.
 
 Rules:
 - Output one highlight object per *highlighted* lyric line. Skip filler.
 - ~1 in 3 lines should be marked is_hook=true; the rest are normal highlights.
 - primary_tag must be tags[0] when tags is non-empty, else null.
-- Every tag in `tags` MUST be a literal id from the vocabulary above.
+- Every tag in `tags` MUST be a literal id from the closed vocabulary above.
+- entry_animation + idle_animation MUST be exact names from the lists above.
+- decoration_color_hint must be a single bucket name (lowercase) or null.
 - non_hooks holds the texts of lyric lines you decided not to highlight.
+- Match animation energy to lyric energy: a love confession deserves
+  scale_pop + pulse, a parting sigh deserves fade + drift, a magical line
+  deserves spin_in + shimmer, etc. Avoid picking the same combo for every
+  line — diversity reads as more thoughtful art direction.
 """
 
 
@@ -555,6 +696,22 @@ def _ollama_align(
     return result
 
 
+# Registry-name validation lives here so the parser can scrub LLM picks
+# without importing the renderer (avoids a circular import in test paths).
+_VALID_ENTRY_ANIMATIONS = {
+    "fade", "bounce_in", "typewriter", "draw_in", "wiggle",
+    "scale_pop", "drop_in", "slide_in_left", "slide_in_right",
+    "slide_in_top", "slide_in_bottom", "stamp", "wobble_in", "spin_in",
+}
+_VALID_IDLE_ANIMATIONS = {
+    "none", "pulse", "wiggle", "drift", "rotate_slow", "shimmer",
+}
+_VALID_COLOR_BUCKETS = {
+    "red", "pink", "orange", "yellow", "green", "cyan", "blue",
+    "purple", "white", "grey", "black", "brown",
+}
+
+
 def _parse_strict_alignment_json(
     raw: str, lyrics: list[LyricLine],
 ) -> AlignmentResult:
@@ -587,6 +744,28 @@ def _parse_strict_alignment_json(
             )
             tags = [FALLBACK_TAG]
         primary = tags[0] if tags else None
+
+        # Animation hints — validate against the renderer's registries; on
+        # invalid pick (or the LLM omitting the field) leave None so
+        # build_decision falls back to the strength-bucketed random pool.
+        entry_anim = h.get("entry_animation")
+        if isinstance(entry_anim, str) and entry_anim not in _VALID_ENTRY_ANIMATIONS:
+            log.warning("LLM picked unknown entry_animation %r; ignoring", entry_anim)
+            entry_anim = None
+        idle_anim = h.get("idle_animation")
+        if isinstance(idle_anim, str) and idle_anim not in _VALID_IDLE_ANIMATIONS:
+            log.warning("LLM picked unknown idle_animation %r; ignoring", idle_anim)
+            idle_anim = None
+        color_hint = h.get("decoration_color_hint")
+        if isinstance(color_hint, str):
+            color_hint = color_hint.lower()
+            if color_hint not in _VALID_COLOR_BUCKETS:
+                log.warning(
+                    "LLM picked unknown decoration_color_hint %r; ignoring",
+                    color_hint,
+                )
+                color_hint = None
+
         cleaned.append(Highlight(
             time=float(h["time"]),
             text=str(h["text"]),
@@ -594,6 +773,9 @@ def _parse_strict_alignment_json(
             tags=tags,
             primary_tag=primary,
             reasoning=str(h.get("reasoning", "")),
+            entry_animation=entry_anim if isinstance(entry_anim, str) else None,
+            idle_animation=idle_anim if isinstance(idle_anim, str) else None,
+            decoration_color_hint=color_hint if isinstance(color_hint, str) else None,
         ))
 
     non_hooks = [str(s) for s in data.get("non_hooks", []) if isinstance(s, str)]

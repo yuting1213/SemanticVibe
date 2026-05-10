@@ -48,7 +48,11 @@ def none_(t: float, *, seed: int = 0) -> IdleModulation:
 
 
 def pulse(t: float, *, seed: int = 0, period: float = 1.5, amplitude: float = 0.05) -> IdleModulation:
-    """Heart-beat scale modulation: scale 1.0 ± amplitude on a sine wave."""
+    """Heart-beat scale modulation: scale 1.0 ± amplitude on a sine wave.
+
+    `period` is overridable so beat_sync can pass `2 * beat_period` (one
+    pulse every two beats) to lock the breathing to the song's rhythm.
+    """
     phase = (t / period) * 2 * math.pi
     return IdleModulation(scale_mul=1.0 + amplitude * math.sin(phase))
 
@@ -106,11 +110,23 @@ REGISTRY = {
 }
 
 
-def evaluate(name: str, *, t_since_start: float, seed: int = 0) -> IdleModulation:
+def evaluate(
+    name: str,
+    *,
+    t_since_start: float,
+    seed: int = 0,
+    pulse_period_override: float | None = None,
+) -> IdleModulation:
     """Look up an idle animation. Returns identity for unknown names — idle
     is decorative-only so unknown values shouldn't break a render.
+
+    `pulse_period_override` (when set) replaces the pulse animation's
+    default 1.5s period — used by beat_sync to lock pulse to the music's
+    tempo. Other animations ignore the override.
     """
     fn = REGISTRY.get(name)
     if fn is None:
         return IdleModulation()
+    if name == "pulse" and pulse_period_override is not None:
+        return fn(t_since_start, seed=seed, period=pulse_period_override)
     return fn(t_since_start, seed=seed)

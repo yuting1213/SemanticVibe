@@ -90,14 +90,23 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                    "`ollama list` to see what you have pulled.")
     p.add_argument("--ollama-host", default=None,
                    help="Ollama server URL (default http://localhost:11434).")
+    p.add_argument("--beat-sync", dest="beat_sync", action="store_true", default=True,
+                   help="Snap lyric/decoration timings to detected beats and "
+                   "promote downbeat hits to punchier entry animations. "
+                   "Default ON. Source: --audio if given, else the video's "
+                   "embedded audio track.")
+    p.add_argument("--no-beat-sync", dest="beat_sync", action="store_false",
+                   help="Disable beat-sync (deterministic, no librosa pass).")
     from semanticvibe.style import default_style_name, style_names
     p.add_argument("--style", choices=style_names(),
                    default=default_style_name(),
                    help="Visual style preset from assets/styles.json.")
-    p.add_argument("--subtitle-style", choices=["banner", "hero"], default=None,
-                   help="Lyric rendering mode: 'banner' = baseline3 chip-per-"
-                   "line, 'hero' = single huge centred glyph + small per-line "
-                   "text. Default comes from the style preset.")
+    p.add_argument("--subtitle-style", choices=["outlined", "banner", "hero"],
+                   default=None,
+                   help="Lyric rendering mode: 'outlined' (v10 default — "
+                   "transparent thick-outlined text, no chip background), "
+                   "'banner' (legacy rounded chip), 'hero' (one big centred "
+                   "glyph + small per-line text). Default comes from preset.")
     p.add_argument("--song-title", type=str, default=None,
                    help="Optional song title; passed to Claude for context "
                    "and folded into the alignment cache key.")
@@ -293,17 +302,24 @@ def main(argv: list[str] | None = None) -> int:
     canvas_size = _measure_canvas(args, log)
 
     # ---- Step 5: build Decision ----
-    log.info("Building Decision (style=%s, subtitle=%s)…",
-             args.style, args.subtitle_style or "<preset default>")
+    log.info("Building Decision (style=%s, subtitle=%s, beat_sync=%s)…",
+             args.style, args.subtitle_style or "<preset default>",
+             args.beat_sync)
+    # Beat-detection audio source: --audio if given (preferred — usually
+    # cleaner), else the video's embedded track.
+    beat_audio = args.audio if args.audio else args.video
     decision = build_decision(
         highlights, person_masks=masks, canvas_size=canvas_size,
         fonts_dir=args.fonts_dir, seed=args.seed,
         style=args.style, subtitle_style=args.subtitle_style,
+        audio_path=beat_audio if args.beat_sync else None,
+        beat_sync=args.beat_sync,
     )
     log.info(
-        "Decision: %d elements (%d text, %d banner, %d decoration, %d hero)",
+        "Decision: %d elements (%d text, %d outlined, %d banner, %d decoration, %d hero)",
         len(decision.elements),
         sum(1 for e in decision.elements if e.type == "text"),
+        sum(1 for e in decision.elements if e.type == "subtitle_outlined"),
         sum(1 for e in decision.elements if e.type == "subtitle_banner"),
         sum(1 for e in decision.elements if e.type == "decoration"),
         sum(1 for e in decision.elements if e.type == "hero_text"),

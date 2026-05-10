@@ -20,11 +20,14 @@ from semanticvibe.render.animations import AnimationState, ENTRY_DURATION, EXIT_
 from semanticvibe.render.hero_text import render_hero
 from semanticvibe.render.text_render import (
     fit_subtitle_banner_to_canvas,
+    fit_subtitle_outlined_to_canvas,
     fit_to_canvas,
     measure_text,
     render_subtitle_banner,
+    render_subtitle_outlined,
     render_text,
     resolve_subtitle_banner_anchor,
+    resolve_subtitle_outlined_anchor,
 )
 from semanticvibe.schemas.decision import (
     Decision,
@@ -32,6 +35,7 @@ from semanticvibe.schemas.decision import (
     Element,
     HeroTextElement,
     SubtitleBannerElement,
+    SubtitleOutlinedElement,
     TextElement,
 )
 
@@ -145,15 +149,24 @@ def _load_decoration_base(
     open_clip → transformers → pyarrow has hit WinError 6714 on
     Windows); use `assets.clip_search.find_asset` directly when needed.
     """
-    matches = library.by_tag(element.asset_tag)
-    src_path = matches[0].path if matches else None
+    # v10: prefer the v6 hand-drawn library (assets/index.json with josh+tofu
+    # artwork) over the legacy data/assets_lib procedural placeholders. The
+    # legacy library only kicks in when the v6 retriever has nothing — keeps
+    # backward compat for renders pointed at custom local libraries.
+    src_path = None
+    retriever = _v6_retriever()
+    if retriever is not None:
+        rec = retriever.get(
+            element.asset_tag,
+            avoid_recent=True,
+            prefer_color_bucket=getattr(element, "prefer_color_bucket", None),
+        )
+        if rec is not None:
+            src_path = retriever.repo_root / rec["file"]
 
     if src_path is None:
-        retriever = _v6_retriever()
-        if retriever is not None:
-            rec = retriever.get(element.asset_tag, avoid_recent=True)
-            if rec is not None:
-                src_path = retriever.repo_root / rec["file"]
+        matches = library.by_tag(element.asset_tag)
+        src_path = matches[0].path if matches else None
 
     if src_path is None:
         return None
@@ -221,9 +234,24 @@ def _prepare_decoration_copies(
     if palette_hexes and not element.color_tint and element.scatter and element.count > 1:
         retriever = _v6_retriever()
         if retriever is not None:
-            recs = retriever.get_balanced(
-                element.asset_tag, element.count, palette_hexes,
-            )
+            color_hint = getattr(element, "prefer_color_bucket", None)
+            if color_hint:
+                # LLM picked a single colour for this decoration — pull `count`
+                # PNGs all in that bucket (with avoid-recent dedup).
+                recs = []
+                for _ in range(element.count):
+                    rec = retriever.get(
+                        element.asset_tag,
+                        avoid_recent=True,
+                        prefer_color_bucket=color_hint,
+                    )
+                    if rec is None:
+                        break
+                    recs.append(rec)
+            else:
+                recs = retriever.get_balanced(
+                    element.asset_tag, element.count, palette_hexes,
+                )
             if recs:
                 target_size = element.base_size or 80
                 per_copy_bases = []
@@ -351,6 +379,7 @@ def _compose_idle(
     start: float,
     end: float,
     seed: int,
+    pulse_period_override: float | None = None,
 ) -> AnimationState:
     """Layer an idle animation on top of an entry-animation `AnimationState`.
 
@@ -358,6 +387,9 @@ def _compose_idle(
     the visible window — between `start + ENTRY_DURATION` and
     `end - EXIT_DURATION`. During entry/exit transitions the entry curve
     owns the look and idle would fight it.
+
+    `pulse_period_override` (when set) replaces the pulse animation's
+    default period so beat_sync can lock breathing to song tempo.
     """
     if idle_name == "none" or idle_name is None:
         return state
@@ -369,6 +401,7 @@ def _compose_idle(
 
     idle = idle_animations.evaluate(
         idle_name, t_since_start=now - start, seed=seed,
+        pulse_period_override=pulse_period_override,
     )
     return AnimationState(
         alpha=state.alpha * idle.alpha_mul,
@@ -389,16 +422,18 @@ def _resolve_decoration_anchor(
 ) -> tuple[int, int]:
     """Pick the top-left pixel for the decoration tile.
 
-    Heuristic for Week 1 (Stage 4 will replace this):
-    - If `near_text_id` resolved to a known text element, snug the decoration
-      to the upper-right of that text's bbox so it reads as an emphasis
-      sticker on the title.
-    - Otherwise, top-right safe zone of the frame.
+    v10 priority:
+    1. element.pixel_anchor (forbidden-map placement) wins outright.
+    2. near_text_id → snug the decoration to the upper-right of that
+       text's bbox.
+    3. Fallback: top-right safe zone of the frame.
     """
     canvas_w, canvas_h = canvas_size
     tile_w, tile_h = tile.size
 
-    if element.near_text_id is not None and element.near_text_id in text_anchors:
+    if getattr(element, "pixel_anchor", None) is not None:
+        x, y = element.pixel_anchor
+    elif element.near_text_id is not None and element.near_text_id in text_anchors:
         text_x, text_y = text_anchors[element.near_text_id]
         text_w, text_h = text_sizes[element.near_text_id]
         x = text_x + text_w - tile_w // 3
@@ -445,6 +480,8 @@ def _make_frame_factory(
     text_sizes: dict[int, tuple[int, int]] = {}
     fitted_banner: dict[int, SubtitleBannerElement] = {}
     banner_anchors: dict[int, tuple[int, int]] = {}
+    fitted_outlined: dict[int, SubtitleOutlinedElement] = {}
+    outlined_anchors: dict[int, tuple[int, int]] = {}
     for idx, el in enumerate(decision.elements):
         if isinstance(el, TextElement):
             fitted = fit_to_canvas(el, fonts_dir, canvas_size)
@@ -457,10 +494,19 @@ def _make_frame_factory(
             banner_anchors[idx] = resolve_subtitle_banner_anchor(
                 fb, fonts_dir, canvas_size,
             )
+        elif isinstance(el, SubtitleOutlinedElement):
+            fo = fit_subtitle_outlined_to_canvas(el, fonts_dir, canvas_size)
+            fitted_outlined[idx] = fo
+            outlined_anchors[idx] = resolve_subtitle_outlined_anchor(
+                fo, fonts_dir, canvas_size,
+            )
 
     # Each DecorationElement → list of (tile, anchor) pairs. count=1 yields
     # one pair; count>1 + scatter yields N pairs spread across the canvas.
     palette_hexes = list(decision.global_style.color_palette) if decision.global_style else []
+    pulse_period_override = (
+        decision.global_style.beat_period_sec if decision.global_style else None
+    )
     decoration_copies: dict[int, list[tuple[Image.Image, tuple[int, int]]]] = {}
     if library is not None:
         for idx, el in enumerate(decision.elements):
@@ -513,6 +559,27 @@ def _make_frame_factory(
                 _paste_rgba(canvas, tile, banner_anchors[idx])
                 continue
 
+            if isinstance(element, SubtitleOutlinedElement):
+                if t < element.start_time or t > element.end_time:
+                    continue
+                fade = 0.4
+                if t < element.start_time + fade:
+                    alpha = (t - element.start_time) / fade
+                elif t > element.end_time - fade:
+                    alpha = (element.end_time - t) / fade
+                else:
+                    alpha = 1.0
+                alpha = max(0.0, min(1.0, alpha))
+                if alpha <= 0:
+                    continue
+                state = AnimationState(alpha=alpha)
+                tile = render_subtitle_outlined(
+                    fitted_outlined[idx], state, fonts_dir,
+                    canvas_size=canvas_size,
+                )
+                _paste_rgba(canvas, tile, outlined_anchors[idx])
+                continue
+
             # Pick entry animation: TextElement and DecorationElement both
             # carry `animation`; Decoration's defaults to "fade" via schema.
             anim_name = element.animation
@@ -532,6 +599,7 @@ def _make_frame_factory(
                 start=element.start_time,
                 end=element.end_time,
                 seed=idx,
+                pulse_period_override=pulse_period_override,
             )
 
             if isinstance(element, TextElement):

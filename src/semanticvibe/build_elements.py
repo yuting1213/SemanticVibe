@@ -25,9 +25,17 @@ from typing import Any
 
 import numpy as np
 
+from semanticvibe.layout.forbidden_map import build_forbidden_map_at_time
 from semanticvibe.layout.zones import find_placement_zone
 from semanticvibe.pose_detector import pick_nearest_mask
-from semanticvibe.render.text_render import _resolve_font_file, fit_to_canvas, measure_text
+from semanticvibe.render.text_render import (
+    _resolve_font_file,
+    fit_subtitle_outlined_to_canvas,
+    fit_to_canvas,
+    measure_subtitle_outlined,
+    measure_text,
+    resolve_subtitle_outlined_anchor,
+)
 from semanticvibe.schemas.decision import (
     Decision,
     DecorationElement,
@@ -35,7 +43,16 @@ from semanticvibe.schemas.decision import (
     HeroTextElement,
     OutlineLayer,
     SubtitleBannerElement,
+    SubtitleOutlinedElement,
     TextElement,
+)
+from semanticvibe.beat_sync import (
+    BeatInfo,
+    average_beat_period,
+    detect_beats,
+    is_downbeat,
+    is_high_energy,
+    snap_to_beat,
 )
 from semanticvibe.lyrics import LyricLine
 from semanticvibe.semantic_align import Highlight, align_lyrics
@@ -61,9 +78,18 @@ STRONG_ENTRY = ["scale_pop", "stamp", "drop_in"]
 NORMAL_ENTRY = ["fade", "slide_in_left", "slide_in_right", "wobble_in"]
 SOFT_ENTRY = ["fade", "draw_in"]
 
+# Beat-aware overrides: when a highlight lands ON a downbeat we want the
+# punchiest entry available regardless of the line's "strength" score —
+# the music's drum hit already commits to drama and the visual should
+# match. spin_in is reserved for "magical" downbeat moments.
+DOWNBEAT_ENTRY = ["stamp", "drop_in", "scale_pop", "spin_in"]
+
 IDLE_POOL_STRONG = ["pulse", "wiggle"]
 IDLE_POOL_NORMAL = ["drift", "wiggle"]
 IDLE_POOL_SOFT = ["shimmer", "drift"]
+# In a high-energy chorus segment, force pulse so the on-screen elements
+# breathe with the music's loudest moments.
+CHORUS_IDLE = "pulse"
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +102,22 @@ def _text_size_for_strength(strength: float) -> int:
     return int(64 + (110 - 64) * strength)
 
 
-def _pick_entry(strength: float, rng: random.Random) -> str:
+def _pick_entry(
+    strength: float,
+    rng: random.Random,
+    hint: str | None = None,
+    *,
+    is_downbeat_hit: bool = False,
+) -> str:
+    """Prefer the LLM-supplied hint; fall back to strength-bucketed pool.
+
+    `is_downbeat_hit=True` upgrades to DOWNBEAT_ENTRY pool (overrides
+    the strength bucket) but still defers to an explicit `hint` when set.
+    """
+    if hint:
+        return hint
+    if is_downbeat_hit:
+        return rng.choice(DOWNBEAT_ENTRY)
     if strength >= 0.7:
         return rng.choice(STRONG_ENTRY)
     if strength >= 0.4:
@@ -84,7 +125,17 @@ def _pick_entry(strength: float, rng: random.Random) -> str:
     return rng.choice(SOFT_ENTRY)
 
 
-def _pick_idle(strength: float, rng: random.Random) -> str:
+def _pick_idle(
+    strength: float,
+    rng: random.Random,
+    hint: str | None = None,
+    *,
+    in_chorus: bool = False,
+) -> str:
+    if hint:
+        return hint
+    if in_chorus:
+        return CHORUS_IDLE
     if strength >= 0.7:
         return rng.choice(IDLE_POOL_STRONG)
     if strength >= 0.4:
@@ -198,6 +249,33 @@ def _quadrant_for_index(i: int) -> str:
     return rotation[i % len(rotation)]
 
 
+def _corner_zones(canvas_size: tuple[int, int]) -> list[tuple[int, int, int, int]]:
+    """Four corner regions for hero-decoration placement preference."""
+    w, h = canvas_size
+    return [
+        (int(w * 0.65), int(h * 0.05), int(w * 0.95), int(h * 0.20)),  # right_upper
+        (int(w * 0.05), int(h * 0.05), int(w * 0.35), int(h * 0.20)),  # left_upper
+        (int(w * 0.05), int(h * 0.65), int(w * 0.35), int(h * 0.85)),  # left_lower
+        (int(w * 0.65), int(h * 0.65), int(w * 0.95), int(h * 0.85)),  # right_lower
+    ]
+
+
+def _scaled_person_masks(
+    person_masks: dict[float, np.ndarray] | None,
+    canvas_size: tuple[int, int],
+) -> dict[float, np.ndarray]:
+    """Pre-scale every pose mask to canvas resolution so ForbiddenMap can
+    OR them in directly without re-scaling per highlight."""
+    if not person_masks:
+        return {}
+    out: dict[float, np.ndarray] = {}
+    for t, m in person_masks.items():
+        if m is None:
+            continue
+        out[t] = _scale_mask_to_canvas(m, canvas_size)
+    return out
+
+
 def build_decision(
     highlights: list[Highlight],
     *,
@@ -210,6 +288,8 @@ def build_decision(
     palette_primary: str | None = None,
     palette_accent: str | None = None,
     palette_outline: str | None = None,
+    audio_path: Path | str | None = None,
+    beat_sync: bool = True,
 ) -> Decision:
     """Assemble a `Decision` from a list of `Highlight`s + per-time pose masks.
 
@@ -234,9 +314,34 @@ def build_decision(
     decoration_palette = preset.get("decoration_color_palette", [palette_primary])
     ambient_tags = preset.get("ambient_tags", [])
     sub_mode = subtitle_style or preset.get("subtitle_default", "hero")
-    if sub_mode not in ("banner", "hero"):
-        log.warning("unknown subtitle_style %r, falling back to 'hero'", sub_mode)
-        sub_mode = "hero"
+    if sub_mode not in ("banner", "hero", "outlined"):
+        log.warning("unknown subtitle_style %r, falling back to 'outlined'", sub_mode)
+        sub_mode = "outlined"
+
+    # ---- v9: beat detection (optional) -----------------------------------
+    beat_info: BeatInfo | None = None
+    beat_period: float | None = None
+    snap_count = 0
+    if beat_sync and audio_path:
+        try:
+            beat_info = detect_beats(str(audio_path))
+            beat_period = average_beat_period(beat_info["beat_times"])
+            log.info(
+                "[beat_sync] driving build_decision: tempo=%.1f BPM, beat_period=%.3fs",
+                beat_info["tempo"], beat_period or 0.0,
+            )
+            for hl in highlights:
+                snapped = snap_to_beat(hl.time, beat_info["beat_times"])
+                if snapped != hl.time:
+                    snap_count += 1
+                    hl.time = snapped
+            log.info(
+                "[beat_sync] snapped %d / %d highlights to nearest beat (max ±0.15s)",
+                snap_count, len(highlights),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("beat detection failed (%s); continuing without beat sync", exc)
+            beat_info = None
 
     # ---- Tag expansion: pad under-tagged highlights with ambient tags. ----
     # Avoids "everything is sparkle" by guaranteeing ≥2 tags per highlight
@@ -302,17 +407,85 @@ def build_decision(
                 reasoning=f"hero of song — strongest tag={hero_hl.primary_tag!r}",
             ))
 
+    # ---- v10 layout pre-pass ---------------------------------------------
+    # 1) Pre-resolve every subtitle's pixel rect so the forbidden-map
+    #    knows where the lyrics will land before placing decorations.
+    outlined_cfg = preset.get("subtitle_outlined", {})
+    subtitle_rects: list[tuple[float, float, int, int, int, int]] = []  # (st, et, x, y, w, h)
+    pre_subtitles: list[Highlight | None] = [None] * len(highlights)  # holds the SubtitleOutlinedElement we'll emit
+    canvas_pose_masks = _scaled_person_masks(person_masks, canvas_size)
+
+    if sub_mode in ("outlined", "banner"):
+        for i, hl in enumerate(highlights):
+            hl_start = max(0.0, hl.time)
+            hl_end = hl_start + _highlight_duration(hl, highlights)
+            if sub_mode == "outlined":
+                provisional_sub = SubtitleOutlinedElement(
+                    content=hl.text,
+                    start_time=hl_start,
+                    end_time=hl_end,
+                    position="top_banner",
+                    font=outlined_cfg.get("font", DEFAULT_FONT),
+                    size=outlined_cfg.get("size", 64),
+                    text_color=outlined_cfg.get("text_color", palette_halo),
+                    outline_color=outlined_cfg.get("outline_color", palette_primary),
+                    outline_width=outlined_cfg.get("outline_width", 6),
+                    shadow_offset=outlined_cfg.get("shadow_offset", 2),
+                    shadow_alpha=outlined_cfg.get("shadow_alpha", 120),
+                    reasoning=hl.reasoning or "v10 outlined subtitle",
+                )
+                fitted_sub = fit_subtitle_outlined_to_canvas(
+                    provisional_sub, fonts_dir, canvas_size,
+                )
+                # Pose-aware top vs bottom (reuses the v9 banner heuristic).
+                sub_w, sub_h = measure_subtitle_outlined(
+                    fitted_sub, fonts_dir, canvas_size,
+                )
+                pose_mask = canvas_pose_masks.get(
+                    min(canvas_pose_masks, key=lambda k: abs(k - hl.time))
+                ) if canvas_pose_masks else None
+                pos = _pick_banner_position(sub_h, canvas_size, pose_mask)
+                fitted_sub = fitted_sub.model_copy(update={"position": pos})
+                # Per-line outline alternation for baseline_kenpa-style preset.
+                alt_color = outlined_cfg.get("outline_color_alt")
+                if alt_color and i % 2 == 1:
+                    fitted_sub = fitted_sub.model_copy(update={"outline_color": alt_color})
+                anchor_x, anchor_y = resolve_subtitle_outlined_anchor(
+                    fitted_sub, fonts_dir, canvas_size,
+                )
+                pre_subtitles[i] = fitted_sub
+                subtitle_rects.append(
+                    (hl_start, hl_end, anchor_x, anchor_y, sub_w, sub_h)
+                )
+
+    # ---- emit subtitles in the order we just computed --------------------
+    subtitle_index_for_highlight: list[int | None] = [None] * len(highlights)
+    if sub_mode == "outlined":
+        for i, sub in enumerate(pre_subtitles):
+            if sub is None:
+                continue
+            subtitle_index_for_highlight[i] = len(elements)
+            elements.append(sub)
+
+    # ---- per-highlight emission (text in hero mode, decorations always) -
+    corner_zones = _corner_zones(canvas_size)
+    layout_stats = {"placed": 0, "shrunk": 0, "skipped": 0}
+
     for i, hl in enumerate(highlights):
-        # ------- timing -------
         start_time = max(0.0, hl.time)
         end_time = start_time + _highlight_duration(hl, highlights)
 
-        text_idx: int | None = None
+        if beat_info:
+            hl_is_downbeat = is_downbeat(hl.time, beat_info["downbeat_times"])
+            hl_in_chorus = is_high_energy(hl.time, beat_info["high_energy_segments"])
+        else:
+            hl_is_downbeat = False
+            hl_in_chorus = False
 
+        text_idx: int | None = subtitle_index_for_highlight[i]
+
+        # Banner-mode + hero-mode legacy paths preserved -------------------
         if sub_mode == "banner":
-            # ------- baseline3 style: full-line subtitle chip ----------------
-            # Pose-aware position: if the dancer's head is at the top of
-            # the frame at this lyric's time, drop the banner to the bottom.
             banner_height_estimate = banner_cfg.get("size", 42) + banner_cfg.get("padding", 18) * 2
             mask = pick_nearest_mask(person_masks, hl.time)
             if mask is not None:
@@ -334,15 +507,11 @@ def build_decision(
                 bg_alpha=banner_cfg.get("bg_alpha", 140),
                 corner_radius=banner_cfg.get("corner_radius", 16),
                 padding=banner_cfg.get("padding", 18),
-                reasoning=(
-                    f"{hl.reasoning or 'subtitle banner'} (pos={banner_position} "
-                    f"avoiding pose at t={hl.time:.1f}s)"
-                ),
+                reasoning=hl.reasoning or "v10 banner (legacy)",
             )
             elements.append(banner)
             size = banner_cfg.get("size", 42)
-        else:
-            # ------- legacy hero/text style: pose-aware floating text -------
+        elif sub_mode == "hero":
             font = DEFAULT_FONT if hl.strength >= 0.6 else DEFAULT_BODY_FONT
             size = _text_size_for_strength(hl.strength)
             if hl.strength >= 0.7:
@@ -351,85 +520,136 @@ def build_decision(
             else:
                 color = palette_primary
                 outline_color = palette_outline
-
             provisional = TextElement(
-                content=hl.text,
-                start_time=start_time,
-                end_time=end_time,
-                anchor=(0, 0),
-                font=font,
-                size=size,
-                color=color,
-                outline_color=outline_color,
-                outline_width=5,
+                content=hl.text, start_time=start_time, end_time=end_time,
+                anchor=(0, 0), font=font, size=size, color=color,
+                outline_color=outline_color, outline_width=5,
                 outline_layers=[OutlineLayer(color=palette_halo, width=4)],
                 shadow_offset=(3, 3) if hl.strength >= 0.7 else None,
-                animation=_pick_entry(hl.strength, rng),
-                idle_animation=_pick_idle(hl.strength, rng),
+                animation=_pick_entry(hl.strength, rng, hl.entry_animation,
+                                      is_downbeat_hit=hl_is_downbeat),
+                idle_animation=_pick_idle(hl.strength, rng, hl.idle_animation,
+                                          in_chorus=hl_in_chorus),
                 rotation_jitter=2.0,
-                reasoning=hl.reasoning or "auto-generated by build_decision",
+                reasoning=hl.reasoning or "v10 hero-mode floating text",
             )
             fitted = fit_to_canvas(provisional, fonts_dir, canvas_size)
             text_w, text_h = measure_text(fitted, fonts_dir)
-
             mask = pick_nearest_mask(person_masks, hl.time)
             if mask is not None:
                 mask = _scale_mask_to_canvas(mask, canvas_size)
             else:
                 mask = np.zeros((canvas_size[1], canvas_size[0]), dtype=bool)
-
             prefer_quad = _quadrant_for_index(i)
             position = find_placement_zone(
                 mask, target_size=(text_w, text_h), prefer=prefer_quad,
             )
             if position is None:
                 log.warning(
-                    "Highlight %d (%r) found no placement; falling back to upper-left corner.",
+                    "Highlight %d (%r) found no placement; falling back to upper-left.",
                     i, hl.text,
                 )
                 position = (16, 16)
-
             text_idx = len(elements)
             elements.append(fitted.model_copy(update={"anchor": position}))
+        else:
+            # outlined mode — subtitle already emitted in pre-pass
+            size = outlined_cfg.get("size", 64)
 
-        # ------- decorations (one per tag, up to 2 — colour-balanced) -------
-        # Walk hl.tags so a single line emits a heart + a star, not just one
-        # of either. Cycle decoration_palette so the colour mix stays even
-        # across the song.
-        for tag_pos, tag in enumerate(hl.tags[:2]):
+        # ---- v10 decoration placement via ForbiddenMap ------------------
+        max_tags_per_line = 4 if hl_in_chorus else 2
+        for tag_pos, tag in enumerate(hl.tags[:max_tags_per_line]):
+            # Hero (first tag) prefers a corner zone; ambient tags free-place.
+            is_hero_dec = tag_pos == 0
+            target_size_px = (
+                int(size * 1.6) if is_hero_dec else int(size * 1.0)
+            )
+            target_size_tuple = (target_size_px, target_size_px)
+
+            fmap = build_forbidden_map_at_time(
+                hl.time + 0.2,
+                person_masks=canvas_pose_masks,
+                subtitle_rects=subtitle_rects,
+                canvas_size=canvas_size,
+            )
+
+            prefer = rng.choice(corner_zones) if is_hero_dec else None
+            anchor = fmap.find_free_position(
+                target_size_tuple, prefer_zone=prefer, rng=rng,
+            )
+            if anchor is None:
+                # First retry: shrink to half size.
+                fallback = (target_size_px // 2, target_size_px // 2)
+                anchor = fmap.find_free_position(fallback, rng=rng)
+                if anchor is not None:
+                    target_size_px = fallback[0]
+                    layout_stats["shrunk"] += 1
+                    log.warning(
+                        "Highlight %d / tag %r: shrunk decoration to %dpx "
+                        "(coverage=%.0f%%)",
+                        i, tag, target_size_px, fmap.coverage_pct() * 100,
+                    )
+            if anchor is None:
+                layout_stats["skipped"] += 1
+                log.warning(
+                    "Highlight %d / tag %r: SKIPPED (no free space, "
+                    "coverage=%.0f%%)",
+                    i, tag, fmap.coverage_pct() * 100,
+                )
+                continue
+            layout_stats["placed"] += 1
+
             tint_color = decoration_palette[
                 (i + tag_pos) % max(1, len(decoration_palette))
             ]
             decoration = DecorationElement(
                 asset_tag=tag,
-                near_text_id=text_idx,  # None in banner mode → renderer scatters
+                near_text_id=text_idx,
                 start_time=start_time,
                 end_time=end_time,
-                base_size=int(size * 1.3),
+                base_size=target_size_px,
                 rotation_jitter=10.0,
-                animation=_pick_entry(hl.strength, rng),
-                idle_animation=_pick_idle(hl.strength, rng),
-                # color_tint=[] preserves the asset's own colour (v6 hand-drawn
-                # assets are full-colour). The retriever picks a colour-diverse
-                # PNG from the available pool via decoration_color_palette.
+                animation=_pick_entry(hl.strength, rng, hl.entry_animation,
+                                      is_downbeat_hit=hl_is_downbeat),
+                idle_animation=_pick_idle(hl.strength, rng, hl.idle_animation,
+                                          in_chorus=hl_in_chorus),
                 color_tint=[],
+                prefer_color_bucket=hl.decoration_color_hint,
+                pixel_anchor=anchor,
                 reasoning=(
-                    f"tag {tag!r} (priority {tag_pos}) for line {hl.text!r}; "
-                    f"target colour bucket {tint_color}"
+                    f"tag {tag!r} (pri {tag_pos}, "
+                    f"{'hero' if is_hero_dec else 'ambient'}) for "
+                    f"line {hl.text!r}; placed at {anchor} "
+                    f"(forbidden coverage={fmap.coverage_pct()*100:.0f}%); "
+                    f"target colour {tint_color}"
                 ),
             )
             elements.append(decoration)
 
+    log.info(
+        "[layout/v10] decorations placed=%d, shrunk=%d, skipped=%d",
+        layout_stats["placed"], layout_stats["shrunk"], layout_stats["skipped"],
+    )
+
     # ------- global style -------
+    vibe_extras = ""
+    if beat_info:
+        vibe_extras = (
+            f" + beat_sync (tempo={beat_info['tempo']:.1f} BPM, "
+            f"{snap_count}/{len(highlights)} snapped)"
+        )
     return Decision(
         elements=elements,
         global_style=GlobalStyle(
             color_palette=decoration_palette + [palette_outline],
             vibe=(
-                f"v7 style={style_name!r} subtitle={sub_mode!r} — "
-                "lyrics-driven, pose-aware text + colour-balanced decorations "
-                "+ ambient sparkle scatter"
+                f"v9 style={style_name!r} subtitle={sub_mode!r} — "
+                "lyrics-driven, pose-aware text + colour-balanced decorations"
+                f"{vibe_extras}"
             ),
+            # Pulse one full breath every two beats — gives roughly 1 Hz at
+            # 120 BPM which reads as "alive" without being seasick-fast.
+            beat_period_sec=(beat_period * 2) if beat_period else None,
         ),
     )
 
@@ -547,8 +767,8 @@ def build_elements_from_lyrics(
             "outline_width": 5,
             "outline_layers": [{"color": palette_outline, "width": 3}],
             "shadow_offset": [3, 3] if hl.strength >= 0.7 else None,
-            "animation": _pick_entry(hl.strength, rng),
-            "idle_animation": _pick_idle(hl.strength, rng),
+            "animation": _pick_entry(hl.strength, rng, hl.entry_animation),
+            "idle_animation": _pick_idle(hl.strength, rng, hl.idle_animation),
             "rotation_jitter": 2.0,
             "start_time": start_time,
             "end_time": end_time,
@@ -563,8 +783,8 @@ def build_elements_from_lyrics(
                 "near_text_id": text_idx,
                 "base_size": int(size * 1.3),
                 "rotation_jitter": 10.0,
-                "animation": _pick_entry(hl.strength, rng),
-                "idle_animation": _pick_idle(hl.strength, rng),
+                "animation": _pick_entry(hl.strength, rng, hl.entry_animation),
+                "idle_animation": _pick_idle(hl.strength, rng, hl.idle_animation),
                 "color_tint": [palette_primary if hl.strength < 0.7 else palette_accent],
                 "start_time": start_time,
                 "end_time": end_time,

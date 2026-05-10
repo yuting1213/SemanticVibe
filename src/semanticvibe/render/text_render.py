@@ -16,7 +16,11 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from semanticvibe.render.animations import AnimationState
-from semanticvibe.schemas.decision import SubtitleBannerElement, TextElement
+from semanticvibe.schemas.decision import (
+    SubtitleBannerElement,
+    SubtitleOutlinedElement,
+    TextElement,
+)
 
 
 def _resolve_font_file(font_name: str, fonts_dir: Path) -> Path:
@@ -374,4 +378,287 @@ def resolve_subtitle_banner_anchor(
         y = max(element.margin, canvas_h - h - element.margin)
     else:  # center
         y = max(element.margin, (canvas_h - h) // 2)
+    return x, y
+
+
+# ---------------------------------------------------------------------------
+# Subtitle "outlined" — v10 (no background chip, just thick-outlined text)
+# ---------------------------------------------------------------------------
+
+
+def _is_cjk(ch: str) -> bool:
+    """Rough CJK / fullwidth detection — used to decide if word-wrap or
+    char-wrap is appropriate."""
+    if not ch:
+        return False
+    o = ord(ch)
+    return (
+        0x3000 <= o <= 0x303F      # CJK symbols
+        or 0x3040 <= o <= 0x30FF   # Hiragana / Katakana
+        or 0x4E00 <= o <= 0x9FFF   # CJK unified ideographs
+        or 0xFF00 <= o <= 0xFFEF   # Fullwidth forms
+    )
+
+
+def _wrap_subtitle_lines(
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+    max_lines: int,
+) -> list[str]:
+    """Greedy wrap into at most `max_lines` lines, each ≤ `max_width` px.
+
+    Latin runs only break at spaces; CJK runs may break anywhere. Returns
+    the original text as a single-element list when it already fits, or
+    when wrapping would exceed `max_lines` (the caller is expected to then
+    fall back to font shrinking).
+    """
+    full_w = font.getbbox(text)[2] - font.getbbox(text)[0]
+    if full_w <= max_width:
+        return [text]
+    if max_lines <= 1:
+        return [text]
+
+    def _fits(s: str) -> bool:
+        b = font.getbbox(s)
+        return (b[2] - b[0]) <= max_width
+
+    lines: list[str] = []
+    remaining = text
+    while remaining and len(lines) < max_lines:
+        if _fits(remaining):
+            lines.append(remaining)
+            return lines
+        # Find the largest prefix that fits.
+        lo, hi = 1, len(remaining)
+        best = 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if _fits(remaining[:mid]):
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        # Latin word-break: if the line lands mid-word, walk back to the
+        # last space (within the prefix). CJK skips this — there are no
+        # spaces and any character is a valid break point.
+        cut = best
+        if cut < len(remaining) and not _is_cjk(remaining[cut - 1]) and not _is_cjk(remaining[cut]):
+            space_idx = remaining.rfind(" ", 0, cut)
+            if space_idx > 0:
+                cut = space_idx + 1
+        lines.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        # Wrap exhausted max_lines but text remains — caller should shrink.
+        return [text]
+    return lines
+
+
+def measure_subtitle_outlined(
+    element: SubtitleOutlinedElement,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int] | None = None,
+) -> tuple[int, int]:
+    """(width, height) of the rendered tile including outline + shadow
+    padding. When `canvas_size` is given the wrap layout is computed
+    against `canvas_w * max_width_ratio`; otherwise the raw single-line
+    bbox is returned (legacy behaviour for callers that haven't yet
+    threaded canvas info)."""
+    font_path = str(_resolve_font_file(element.font, fonts_dir))
+    font = _load_font(font_path, element.size)
+    pad = element.outline_width + max(0, element.shadow_offset) + 4
+    if canvas_size is not None and element.wrap_lines:
+        max_text_w = max(20, int(canvas_size[0] * element.max_width_ratio) - 2 * pad)
+        lines = _wrap_for_render(element, font, max_text_w)
+    else:
+        lines = [element.content]
+    line_widths = [font.getbbox(line)[2] - font.getbbox(line)[0] for line in lines]
+    ascent, descent = font.getmetrics()
+    line_h = int((ascent + descent) * element.line_spacing)
+    text_w = max(line_widths) if line_widths else 0
+    return text_w + pad * 2, line_h * len(lines) + pad * 2
+
+
+def _wrap_for_render(
+    element: SubtitleOutlinedElement,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> list[str]:
+    """Single helper used by both render + fit so they agree on layout."""
+    if not element.wrap_lines:
+        return [element.content]
+    return _wrap_subtitle_lines(
+        element.content, font, max_width, element.max_lines,
+    )
+
+
+def fit_subtitle_outlined_to_canvas(
+    element: SubtitleOutlinedElement,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int],
+    *,
+    min_size: int = 24,
+) -> SubtitleOutlinedElement:
+    """Wrap-then-shrink: try wrapping at the original size first; only
+    shrink the font when even the wrapped layout exceeds the canvas.
+    """
+    canvas_w, _ = canvas_size
+    pad = element.outline_width + max(0, element.shadow_offset) + 4
+    max_text_w = max(min_size, int(canvas_w * element.max_width_ratio) - 2 * pad)
+    current = element
+    for _ in range(8):
+        font_path = str(_resolve_font_file(current.font, fonts_dir))
+        font = _load_font(font_path, current.size)
+        lines = _wrap_for_render(current, font, max_text_w)
+        widest = max(font.getbbox(line)[2] - font.getbbox(line)[0] for line in lines)
+        if widest <= max_text_w or current.size <= min_size:
+            break
+        # Wrap couldn't shrink it enough — drop font size.
+        scale = (max_text_w / widest) * 0.95
+        new_size = max(min_size, int(current.size * scale))
+        if new_size == current.size:
+            new_size = max(min_size, current.size - 1)
+        current = current.model_copy(update={"size": new_size})
+    return current
+
+
+def _measure_wrapped(
+    element: SubtitleOutlinedElement,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int],
+) -> tuple[list[str], int, int, int]:
+    """Return (lines, tile_w, tile_h, line_height) for the wrapped
+    rendering — single source of truth used by both `render_subtitle_outlined`
+    and `resolve_subtitle_outlined_anchor`.
+    """
+    canvas_w, _ = canvas_size
+    font_path = str(_resolve_font_file(element.font, fonts_dir))
+    font = _load_font(font_path, element.size)
+    pad = element.outline_width + max(0, element.shadow_offset) + 4
+    max_text_w = max(20, int(canvas_w * element.max_width_ratio) - 2 * pad)
+    lines = _wrap_for_render(element, font, max_text_w)
+    line_widths = [font.getbbox(line)[2] - font.getbbox(line)[0] for line in lines]
+    # Use the font's typographic line height (ascent + descent) so emoji
+    # and accented glyphs don't overlap when stacked.
+    ascent, descent = font.getmetrics()
+    line_h = int((ascent + descent) * element.line_spacing)
+    tile_w = max(line_widths) + pad * 2
+    tile_h = line_h * len(lines) + pad * 2
+    return lines, tile_w, tile_h, line_h
+
+
+def render_subtitle_outlined(
+    element: SubtitleOutlinedElement,
+    state: AnimationState,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int] | None = None,
+) -> Image.Image:
+    """Render a thick-outlined, transparent-background subtitle tile with
+    optional multi-line wrapping. Each line is centred horizontally.
+
+    `canvas_size` controls where wrapping happens: when given the lines
+    break at `canvas_w * max_width_ratio`. None falls back to the
+    element's natural single-line layout (legacy behaviour).
+    """
+    if state.alpha <= 0:
+        return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+
+    font_path = str(_resolve_font_file(element.font, fonts_dir))
+    font = _load_font(font_path, element.size)
+    pad = element.outline_width + max(0, element.shadow_offset) + 4
+
+    if canvas_size is not None and element.wrap_lines:
+        max_text_w = max(
+            20, int(canvas_size[0] * element.max_width_ratio) - 2 * pad,
+        )
+        lines = _wrap_for_render(element, font, max_text_w)
+    else:
+        lines = [element.content]
+
+    # Honour the typewriter / draw_in reveal across the WHOLE multi-line
+    # block — count visible chars from line 0 onward.
+    if state.reveal_fraction < 1.0:
+        total_chars = sum(len(line) for line in lines)
+        budget = max(1, int(round(total_chars * state.reveal_fraction)))
+        visible_lines = []
+        for line in lines:
+            if budget <= 0:
+                break
+            if budget >= len(line):
+                visible_lines.append(line)
+                budget -= len(line)
+            else:
+                visible_lines.append(line[:budget])
+                budget = 0
+        lines = visible_lines or [""]
+
+    ascent, descent = font.getmetrics()
+    line_h = int((ascent + descent) * element.line_spacing)
+    line_widths = [font.getbbox(line)[2] - font.getbbox(line)[0] for line in lines]
+    tile_w = max(line_widths) + pad * 2
+    tile_h = line_h * len(lines) + pad * 2
+
+    img = Image.new("RGBA", (tile_w, tile_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    outline_rgb = _hex_to_rgb(element.outline_color)
+    ow = element.outline_width
+    ow_sq = ow * ow
+    sr, sg, sb = _hex_to_rgb(element.shadow_color)
+
+    for line_idx, line in enumerate(lines):
+        bbox = font.getbbox(line)
+        line_w = bbox[2] - bbox[0]
+        # Centre each line horizontally.
+        text_x = pad + (max(line_widths) - line_w) // 2 - bbox[0]
+        text_y = pad + line_idx * line_h - bbox[1]
+
+        # 1. drop shadow
+        if element.shadow_offset > 0 and element.shadow_alpha > 0:
+            draw.text(
+                (text_x + element.shadow_offset, text_y + element.shadow_offset),
+                line, font=font, fill=(sr, sg, sb, element.shadow_alpha),
+            )
+        # 2. circular thick outline
+        if ow > 0:
+            for dx in range(-ow, ow + 1):
+                for dy in range(-ow, ow + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    if dx * dx + dy * dy > ow_sq:
+                        continue
+                    draw.text(
+                        (text_x + dx, text_y + dy),
+                        line, font=font, fill=outline_rgb,
+                    )
+        # 3. main fill
+        draw.text((text_x, text_y), line, font=font, fill=element.text_color)
+
+    if state.alpha < 1.0:
+        a = img.split()[3].point(lambda v: int(v * state.alpha))
+        img.putalpha(a)
+    if state.scale != 1.0:
+        new_w = max(1, int(round(tile_w * state.scale)))
+        new_h = max(1, int(round(tile_h * state.scale)))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+    return img
+
+
+def resolve_subtitle_outlined_anchor(
+    element: SubtitleOutlinedElement,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int],
+) -> tuple[int, int]:
+    """Top-left placement on the canvas, accounting for wrapped lines."""
+    canvas_w, canvas_h = canvas_size
+    _lines, tile_w, tile_h, _line_h = _measure_wrapped(
+        element, fonts_dir, canvas_size,
+    )
+    x = max(element.margin, (canvas_w - tile_w) // 2)
+    if element.position == "top_banner":
+        y = element.margin
+    elif element.position == "bottom_banner":
+        y = max(element.margin, canvas_h - tile_h - element.margin)
+    else:  # center
+        y = max(element.margin, (canvas_h - tile_h) // 2)
     return x, y

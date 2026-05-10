@@ -1,9 +1,9 @@
 {
-  "_comment": "Style presets consumed by render/build_decision. `subtitle_default` chooses between 'banner' (one rounded-rect chip per line, baseline3 vibe) and 'hero' (one giant chalk glyph per song, v6-default vibe). Override at the CLI with --subtitle-style.",
+  "_comment": "v10 style presets. `subtitle_default` chooses 'outlined' (純文字+厚描邊, baseline3 vibe), 'banner' (legacy rounded chip), or 'hero' (single huge centred glyph). Override at the CLI with --subtitle-style.",
   "default": "pink_handdrawn",
   "presets": {
     "pink_handdrawn": {
-      "subtitle_default": "hero",
+      "subtitle_default": "outlined",
       "text": {
         "color": "#FF6B9D",
         "color_strong": "#E63946",
@@ -11,6 +11,14 @@
         "outline_width": 5,
         "halo_color": "#FFFFFF",
         "halo_width": 4
+      },
+      "subtitle_outlined": {
+        "text_color": "#FFFFFF",
+        "outline_color": "#FF6B9D",
+        "outline_width": 6,
+        "shadow_offset": 2,
+        "shadow_alpha": 120,
+        "font": "KleeOne-SemiBold"
       },
       "subtitle_banner": {
         "text_color": "#FFFFFF",
@@ -22,11 +30,11 @@
         "padding": 18,
         "font": "KleeOne-SemiBold"
       },
-      "decoration_color_palette": ["#FF6B9D", "#E63946", "#FFFFFF"],
+      "decoration_color_palette": ["#FF6B9D", "#FFFFFF", "#E63946"],
       "ambient_tags": ["sparkle", "heart"]
     },
     "green_neon": {
-      "subtitle_default": "banner",
+      "subtitle_default": "outlined",
       "text": {
         "color": "#FFFFFF",
         "color_strong": "#FFFFFF",
@@ -34,6 +42,14 @@
         "outline_width": 6,
         "halo_color": "#A0E847",
         "halo_width": 4
+      },
+      "subtitle_outlined": {
+        "text_color": "#FFFFFF",
+        "outline_color": "#A0E847",
+        "outline_width": 7,
+        "shadow_offset": 2,
+        "shadow_alpha": 100,
+        "font": "KleeOne-SemiBold"
       },
       "subtitle_banner": {
         "text_color": "#FFFFFF",
@@ -47,6 +63,29 @@
       },
       "decoration_color_palette": ["#FF6B9D", "#A0E847", "#FFFFFF"],
       "ambient_tags": ["sparkle", "star"]
+    },
+    "baseline_kenpa": {
+      "_note": "Mimics the けんぱ baseline reference: thick-outlined white text alternating between pink and blue per line, no background chip.",
+      "subtitle_default": "outlined",
+      "text": {
+        "color": "#FFFFFF",
+        "color_strong": "#FFFFFF",
+        "outline_color": "#FF6B9D",
+        "outline_width": 7,
+        "halo_color": "#FFFFFF",
+        "halo_width": 4
+      },
+      "subtitle_outlined": {
+        "text_color": "#FFFFFF",
+        "outline_color": "#FF6B9D",
+        "outline_color_alt": "#5BBFE3",
+        "outline_width": 8,
+        "shadow_offset": 3,
+        "shadow_alpha": 100,
+        "font": "KleeOne-SemiBold"
+      },
+      "decoration_color_palette": ["#FF6B9D", "#5BBFE3", "#FFFFFF"],
+      "ambient_tags": ["sparkle", "heart", "star"]
     }
   }
 }

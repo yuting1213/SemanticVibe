@@ -21,6 +21,12 @@
     {"id": "music_note",    "category": "audio",         "description": "song, music, melody, singing"},
     {"id": "speech_bubble", "category": "communication", "description": "speak, call, message, hello"},
     {"id": "arrow",         "category": "communication", "description": "direction, pointing, focus here, look"},
-    {"id": "dot",           "category": "emphasis",      "description": "dot, beat, period, small accent"}
+    {"id": "dot",           "category": "emphasis",      "description": "dot, beat, period, small accent"},
+    {"id": "animal",        "category": "characters",    "description": "cat, dog, bear, bird, fish, frog, penguin, animal, pet, creature"},
+    {"id": "food",          "category": "food",          "description": "snack, meal, savoury food, bread, sushi, cheese, generic food"},
+    {"id": "fruit",         "category": "food",          "description": "fruit, apple, cherry, grapes, banana, citrus, sweet produce"},
+    {"id": "icecream",      "category": "food",          "description": "ice cream, popsicle, dessert, summer treat, gelato"},
+    {"id": "numbers",       "category": "emphasis",      "description": "stylised digit 0-9 or punctuation glyph, beat counter, lyric counter"},
+    {"id": "transport",     "category": "objects",       "description": "car, bicycle, train, plane, boat, vehicle, journey"}
   ]
 }

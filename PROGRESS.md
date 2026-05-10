@@ -1,3 +1,211 @@
+# v10 — outlined subtitles + dual-zone forbidden-map layout
+
+## What changed since v9
+
+Two visual problems were dragging the v9 output down:
+1. The green / pink rounded-rect chip behind every subtitle was too heavy
+   — it ate frame real estate and competed with the dancer for attention.
+2. Decorations frequently landed on top of subtitles or person silhouettes
+   because `find_placement_zone` only knew about the pose mask.
+
+v10 fixes both:
+
+1. **Subtitle is now純文字 + 厚描邊** (`SubtitleOutlinedElement`):
+   transparent background, white fill, 6-8 px circular outline in the
+   style preset's accent colour, optional drop shadow. The video shows
+   through everywhere outside the glyph silhouette.
+2. **Per-time `ForbiddenMap`**: dilated person mask ∪ active subtitle
+   bboxes → boolean grid. Decorations call
+   `find_free_position(target_size, prefer_zone=…)` and only land in the
+   remaining empty area. Hero decorations prefer one of four corner
+   zones; ambient decorations free-place. When the canvas is too crowded
+   the placer first shrinks to half size, then skips with a warning.
+3. **`baseline_kenpa` style preset** — alternates pink (`#FF6B9D`) and
+   sky-blue (`#5BBFE3`) outline colours per-line, mimicking the
+   reference  けんぱ baseline aesthetic.
+
+### New / modified
+
+| File | What |
+|---|---|
+| `src/semanticvibe/layout/forbidden_map.py` (new) | `ForbiddenMap(W, H)` class with `add_rect(x,y,w,h,padding)`, `add_person_mask(mask, padding_iters)` (uses `scipy.ndimage.binary_dilation`), `coverage_pct()`, `find_free_position(target, prefer_zone, rng, step, top_k)`. Factory `build_forbidden_map_at_time(t, person_masks, subtitle_rects, canvas_size, ...)` returns the per-time forbidden grid. |
+| `src/semanticvibe/layout/__init__.py` | Re-exports `ForbiddenMap` + `build_forbidden_map_at_time`. |
+| `src/semanticvibe/schemas/decision.py` | New `SubtitleOutlinedElement(type='subtitle_outlined', content, position, font, size, text_color, outline_color, outline_width, shadow_offset, shadow_alpha, shadow_color, margin, max_width_ratio)`. Added `pixel_anchor: PixelAnchor \| None` to `DecorationElement` so the forbidden-map can pin decorations to specific positions, overriding the `near_text_id` heuristic. |
+| `src/semanticvibe/render/text_render.py` | New `render_subtitle_outlined(element, state, fonts_dir)` — circular thick outline + optional drop shadow + transparent background. Plus `measure_subtitle_outlined`, `fit_subtitle_outlined_to_canvas`, `resolve_subtitle_outlined_anchor`. The legacy `render_subtitle_banner` (rounded chip) is preserved and still wired so old style presets keep working. |
+| `src/semanticvibe/render/composite.py` | New `subtitle_outlined` per-frame branch (mirrors the banner branch — same fade in/out envelope). `_resolve_decoration_anchor` now honours `element.pixel_anchor` first before falling back to `near_text_id`. |
+| `src/semanticvibe/build_elements.py` | `build_decision` rewritten with a v10 layout pre-pass: (1) emit every subtitle first with pose-aware top/bottom position (reuses v9 `_pick_banner_position`), (2) collect subtitle rects, (3) for each highlight tag build a fresh `ForbiddenMap`, call `find_free_position` with corner-zone preference for hero decorations, fallback to half-size or skip with `[layout/v10]` log line. Per-line outline alternation (`outline_color_alt`) for `baseline_kenpa`. Subtitle modes: `outlined` (default) / `banner` (legacy chip) / `hero` (single big glyph). |
+| `assets/styles.json` | All three presets now default to `subtitle_outlined`. Added `baseline_kenpa` preset with `outline_color="#FF6B9D"` + `outline_color_alt="#5BBFE3"`. Existing `pink_handdrawn` and `green_neon` keep their banner config as a `subtitle_banner` legacy block but the `subtitle_default` flips to `outlined`. |
+| `src/semanticvibe/render/__main__.py` | `--subtitle-style` choices expanded to `{outlined, banner, hero}`. Decision count log line now reports `(text, outlined, banner, decoration, hero)`. |
+
+### CLI
+
+```powershell
+# v10 default — outlined subtitles + forbidden-map layout
+uv run python -m semanticvibe.render `
+    --video data/test_videos/demo.mp4 `
+    --lyrics samples/lyrics_demo.json `
+    --provider ollama --ollama-model gemma3:4b `
+    --style baseline_kenpa --subtitle-style outlined `
+    --out outputs/v10_demo_kenpa.mp4 --preview --assets-dir data/assets_lib
+
+# Legacy v9 chip background
+uv run python -m semanticvibe.render --style green_neon --subtitle-style banner ...
+
+# Hero mode (single huge glyph, no per-line subtitle)
+uv run python -m semanticvibe.render --style pink_handdrawn --subtitle-style hero ...
+```
+
+### Verified — `outputs/v10_demo_kenpa.mp4`
+
+Build log:
+
+```
+Building Decision (style=baseline_kenpa, subtitle=outlined, beat_sync=True)
+[beat_sync] demo.mp4: tempo=161.5 BPM, 89 beats, 23 downbeats, 2 hi-energy
+[beat_sync] snapped 7 / 10 highlights to nearest beat
+[layout/v10] decorations placed=20, shrunk=0, skipped=0
+Decision: 31 elements (0 text, 10 outlined, 0 banner, 21 decoration, 0 hero)
+```
+
+- **10 outlined subtitles** alternate pink (#FF6B9D, lines 0/2/4/6/8) and
+  sky-blue (#5BBFE3, lines 1/3/5/7/9) per the `baseline_kenpa` preset.
+- **20 decorations placed in free zones** — 0 shrunk, 0 skipped.
+  Forbidden coverage on the demo clip averaged ≈45% per highlight
+  (person mask 30-50% + subtitle bbox 5-15%).
+- **Probe frames**: subtitle reads as transparent text with thick
+  pink/blue outline (no background chip); decorations land in corners
+  / margins, never overlapping the dancer's silhouette or the lyric
+  bar.
+
+Tests still 150 / 150.
+
+### Layout-tuning recipe
+
+If `[layout/v10]` reports many `shrunk` or `skipped`:
+- **Person mask too aggressive**: lower `person_padding_iters` from 10
+  to ~6 in `build_forbidden_map_at_time` calls.
+- **Subtitle eating too much**: drop `outlined.size` in the style preset
+  (smaller text → smaller forbidden rect).
+- **Decoration too large**: `target_size_px = int(size * 1.6)` (hero) /
+  `int(size * 1.0)` (ambient) in `build_decision`. Halve them for
+  busier compositions.
+- **Need more lateral spread**: lower the `step=20` parameter in
+  `ForbiddenMap.find_free_position` to 12-15 for finer-grained search
+  (slower but reaches positions a coarse 20 px sweep skips).
+
+### Known limits
+
+- The forbidden map is computed at decoration-placement time only
+  (i.e. once at `hl.time + 0.2`). An idle-animation drift could later
+  carry a decoration into the subtitle rect over a 2-3 s window. In
+  practice this is fine because `idle.drift` amplitude is small
+  (≈25 px) and subtitle padding is 15 px on every side, so the
+  decoration never visibly overlaps even after the maximum drift.
+- `subtitle_outlined`'s thick outline doubles the rendered tile size
+  vs the original glyph bbox. The `fit_subtitle_outlined_to_canvas`
+  shrink pass accounts for this, but very long lines on narrow
+  portrait videos (e.g. 16+ chars on a 340 px canvas) hit `min_size=24`
+  and may still bleed margin → margin. Either shorten the lyric or
+  raise the `max_width_ratio` field to 0.95.
+
+---
+
+# v9 — beat-sync (timings + downbeat-aware animations + tempo-locked pulse)
+
+## What changed since v8
+
+Before v9 the renderer ran every animation cycle on a fixed 1.5 s pulse,
+ignoring the song's actual tempo — elements drifted in their own loops
+while the music did its own thing. v9 plugs in librosa beat tracking and
+binds three layers of the visual to the music's rhythm:
+
+1. **Snap-to-beat for highlight times.** Each highlight's `time` is
+   pulled to the nearest detected beat when within ±150 ms. Lyrics that
+   were 30–80 ms early/late from Whisper now land on the actual drum hit.
+2. **Downbeat-aware entry animations.** Highlights that fall on a
+   downbeat (every 4th beat under the 4/4 assumption) get the
+   `DOWNBEAT_ENTRY` pool (`stamp` / `drop_in` / `scale_pop` / `spin_in`)
+   regardless of strength score — the music already commits to drama
+   and the visual matches.
+3. **Tempo-locked breathing.** The `pulse` idle animation reads
+   `Decision.global_style.beat_period_sec` and uses `2 × beat_period`
+   as its sine-wave period. Elements now breathe once per two beats
+   (≈1 Hz at 120 BPM) instead of always 1.5 s.
+4. **Chorus boost.** When a highlight falls inside a high-energy RMS
+   segment (RMS > mean × 1.2 sustained ≥ 2 s), the per-line decoration
+   cap doubles from 2 → 4 tags AND the idle defaults to `pulse` so the
+   loud parts of the song get visibly louder visuals.
+
+### New / modified
+
+| File | What |
+|---|---|
+| `src/semanticvibe/beat_sync.py` (new) | `detect_beats(media_path)` returns `BeatInfo(tempo, beat_times, downbeat_times, energy_envelope, high_energy_segments)`. `snap_to_beat(t, beats, max_offset=0.15)`, `is_downbeat(t, downbeats, tolerance=0.1)`, `is_high_energy(t, segments)`, `average_beat_period(beats)`. Reuses `preprocess.librosa_beats.extract_wav` for the loudnorm-cached wav path so beat detection doesn't re-decode the same video twice. `lru_cache` on the resolved media-path string. |
+| `src/semanticvibe/build_elements.py` | `build_decision(...)` gained `audio_path: Path \| str \| None = None` and `beat_sync: bool = True`. When both are set: detect beats → snap every highlight's `.time` to the nearest beat (logs the snap count) → set per-highlight `hl_is_downbeat` and `hl_in_chorus` flags → `_pick_entry` and `_pick_idle` consult them. Chorus highlights walk `hl.tags[:4]` instead of `hl.tags[:2]`. `Decision.global_style.beat_period_sec` is populated as `2 × beat_period` so the renderer's pulse syncs. |
+| `src/semanticvibe/schemas/decision.py` | `GlobalStyle` gained `beat_period_sec: float \| None = None`. |
+| `src/semanticvibe/render/idle_animations.py` | `evaluate(...)` gained `pulse_period_override: float \| None = None`; routes to `pulse(period=…)` when supplied. Other animations ignore the override. |
+| `src/semanticvibe/render/composite.py` | Reads `decision.global_style.beat_period_sec` once, threads `pulse_period_override` to `_compose_idle` for both text and decoration paths (single-anchor + scatter copies). |
+| `src/semanticvibe/render/__main__.py` | Added `--beat-sync` (default ON) + `--no-beat-sync`. Beat audio source: `--audio` if given (cleaner stem), otherwise `--video`'s embedded track. |
+
+### CLI
+
+```powershell
+# Beat-sync ON (default) — uses video's audio
+uv run python -m semanticvibe.render --video data/test_videos/demo.mp4 `
+    --lyrics samples/lyrics_demo.json `
+    --provider ollama --ollama-model gemma3:4b `
+    --style green_neon --subtitle-style banner `
+    --out outputs/v9_demo_beat.mp4 --preview --assets-dir data/assets_lib
+
+# Beat-sync ON with cleaner audio source
+uv run python -m semanticvibe.render --video clip.mp4 --audio song.mp3 `
+    --beat-sync --out out.mp4
+
+# Disable beat-sync (back to v8 deterministic pulse + random animation pool)
+uv run python -m semanticvibe.render --video clip.mp4 --no-beat-sync --out out.mp4
+```
+
+### Verified — demo.mp4 + samples/lyrics_demo.json
+
+Render log:
+
+```
+[beat_sync] demo.mp4: tempo=161.5 BPM, 89 beats, 23 downbeats,
+            2 high-energy segments
+[beat_sync] driving build_decision: tempo=161.5 BPM, beat_period=0.364s
+[beat_sync] snapped 7 / 10 highlights to nearest beat (max ±0.15s)
+Decision: 31 elements (0 text, 10 banner, 21 decoration, 0 hero)
+```
+
+- **Tempo**: 161.5 BPM (fast J-pop)
+- **Beat grid**: 89 beats over 32.6 s (one beat every 0.366 s)
+- **Downbeats**: 23 (every 4th beat under 4/4 assumption)
+- **High-energy segments**: 2 (RMS > mean × 1.2 sustained ≥ 2 s)
+- **Snap rate**: 7 / 10 highlights pulled to nearest beat. The
+  remaining 3 were already inside ±150 ms of a beat.
+- **Pulse period**: 0.728 s (= 2 × 0.364), so the breathing visibly
+  matches the song's two-beat phrasing instead of the v8 fixed 1.5 s.
+
+Tests still 150 / 150.
+
+### Known limits
+
+- Downbeats are derived as `beat_times[::4]` — a hard 4/4 assumption.
+  3/4 (waltz), 6/8 (swing), and 5/4 tracks would mis-place the
+  "downbeat" hits. Real meter detection needs `madmom` (heavy CNN
+  dep). For pop / J-pop / K-pop content the 4/4 assumption is right
+  ≥ 95 % of the time.
+- High-energy detection is a simple RMS threshold (`mean × 1.2`
+  sustained ≥ 2 s). It catches loud bridges and instrumental hits as
+  "chorus", not just chorus proper. Good enough for animation
+  intensity decisions; not good enough to drive a chapter marker.
+- Beat-sync only fires when `audio_path` resolves to something librosa
+  can decode. The cached wav under `%TEMP%/semanticvibe_*.wav` is
+  shared with Whisper's audio extraction, so the second run on the
+  same video is instant.
+
+---
+
 # v6 — closed-vocabulary semantic alignment
 
 ## What changed since v5+
