@@ -44,11 +44,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import json
+
 from semanticvibe.build_elements import build_decision
 from semanticvibe.lyrics import LyricLine, load_lyrics
 from semanticvibe.pose_detector import detect_person_mask
 from semanticvibe.render.composite import render_from_decision
-from semanticvibe.semantic_align import align
+from semanticvibe.schemas.decision import Decision, GlobalStyle
+from semanticvibe.semantic_align import align_lyrics
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -77,9 +80,32 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                    help="ISO language code (zh / ja / en / ...). Default: "
                    "Whisper auto-detects.")
     p.add_argument("--out", type=Path, required=True, help="Output mp4 path.")
-    p.add_argument("--provider", choices=["rule_based", "claude", "openai"],
+    p.add_argument("--provider", choices=["rule_based", "claude", "ollama"],
                    default="rule_based",
-                   help="Highlight aligner. rule_based = offline / free.")
+                   help="Highlight aligner. rule_based = offline keyword dict; "
+                   "claude routes through .cache/alignment for repeat runs; "
+                   "ollama hits a local Ollama server (no API key needed).")
+    p.add_argument("--ollama-model", default="gemma3:4b",
+                   help="Ollama model tag (default gemma3:4b). Run "
+                   "`ollama list` to see what you have pulled.")
+    p.add_argument("--ollama-host", default=None,
+                   help="Ollama server URL (default http://localhost:11434).")
+    from semanticvibe.style import default_style_name, style_names
+    p.add_argument("--style", choices=style_names(),
+                   default=default_style_name(),
+                   help="Visual style preset from assets/styles.json.")
+    p.add_argument("--subtitle-style", choices=["banner", "hero"], default=None,
+                   help="Lyric rendering mode: 'banner' = baseline3 chip-per-"
+                   "line, 'hero' = single huge centred glyph + small per-line "
+                   "text. Default comes from the style preset.")
+    p.add_argument("--song-title", type=str, default=None,
+                   help="Optional song title; passed to Claude for context "
+                   "and folded into the alignment cache key.")
+    p.add_argument("--elements-json", type=Path, default=None,
+                   help="Skip alignment + build_decision and load a pre-built "
+                   "Decision JSON (or a flat list of element dicts) directly. "
+                   "Useful for hand-editing what build_elements_from_lyrics "
+                   "produced.")
     p.add_argument("--fonts-dir", type=Path, default=Path("data/fonts"))
     p.add_argument("--assets-dir", type=Path, default=Path("data/assets_lib"))
     p.add_argument("--preview", action="store_true",
@@ -208,6 +234,27 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # ---- Short-circuit: --elements-json bypasses lyrics + alignment ----
+    if args.elements_json:
+        if not args.elements_json.exists():
+            print(f"error: elements json not found: {args.elements_json}",
+                  file=sys.stderr)
+            return 2
+        log.info("[elements-json] loading pre-built Decision: %s",
+                 args.elements_json)
+        raw = json.loads(args.elements_json.read_text(encoding="utf-8"))
+        # Accept either {"elements": [...], "global_style": {...}} or a bare list.
+        if isinstance(raw, list):
+            raw = {
+                "elements": raw,
+                "global_style": {
+                    "color_palette": ["#FF6B9D", "#E63946", "#FFFFFF"],
+                    "vibe": "v6 elements-json mode",
+                },
+            }
+        decision = Decision.model_validate(raw)
+        return _render_decision_path(args, decision, log)
+
     # ---- Step 1: lyrics (3-mode priority) ----
     lyrics = get_lyrics(args, log)
     if not lyrics:
@@ -221,13 +268,21 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Got %d lyric lines.", len(lyrics))
 
     # ---- Step 2: align → highlights ----
-    log.info("Aligning via %s…", args.provider)
-    highlights = align(lyrics, provider=args.provider)
-    log.info("Got %d highlights:", len(highlights))
+    log.info("Aligning via %s%s…", args.provider,
+             f" (song={args.song_title!r})" if args.song_title else "")
+    align_result = align_lyrics(
+        lyrics, provider=args.provider, song_title=args.song_title,
+        ollama_model=args.ollama_model, ollama_host=args.ollama_host,
+    )
+    highlights = align_result.highlights
+    log.info("Got %d highlights (%d hooks, %d non-hooks):",
+             len(highlights),
+             sum(1 for h in highlights if h.is_hook),
+             len(align_result.non_hooks))
     for h in highlights:
         log.info(
-            "  t=%5.1fs  strength=%.2f  tag=%-12s  text=%r",
-            h.lyric_time, h.strength, h.decoration_tag or "—", h.lyric_text,
+            "  t=%5.1fs  hook=%-5s  tags=%-22s  text=%r",
+            h.time, str(h.is_hook), str(h.tags), h.text,
         )
 
     # ---- Step 3: detect person occupancy masks ----
@@ -235,7 +290,30 @@ def main(argv: list[str] | None = None) -> int:
     masks = detect_person_mask(args.video, sample_fps=args.sample_fps)
     log.info("Got %d sampled masks.", len(masks))
 
-    # ---- Step 4: render canvas size ----
+    canvas_size = _measure_canvas(args, log)
+
+    # ---- Step 5: build Decision ----
+    log.info("Building Decision (style=%s, subtitle=%s)…",
+             args.style, args.subtitle_style or "<preset default>")
+    decision = build_decision(
+        highlights, person_masks=masks, canvas_size=canvas_size,
+        fonts_dir=args.fonts_dir, seed=args.seed,
+        style=args.style, subtitle_style=args.subtitle_style,
+    )
+    log.info(
+        "Decision: %d elements (%d text, %d banner, %d decoration, %d hero)",
+        len(decision.elements),
+        sum(1 for e in decision.elements if e.type == "text"),
+        sum(1 for e in decision.elements if e.type == "subtitle_banner"),
+        sum(1 for e in decision.elements if e.type == "decoration"),
+        sum(1 for e in decision.elements if e.type == "hero_text"),
+    )
+
+    return _render_decision_path(args, decision, log)
+
+
+def _measure_canvas(args, log) -> tuple[int, int]:
+    """Compute the render canvas size, respecting --preview."""
     from moviepy import VideoFileClip
 
     with VideoFileClip(str(args.video)) as src:
@@ -250,21 +328,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         canvas_size = (src_w - (src_w % 2), src_h - (src_h % 2))
     log.info("Canvas: %dx%d", *canvas_size)
+    return canvas_size
 
-    # ---- Step 5: build Decision ----
-    log.info("Building Decision…")
-    decision = build_decision(
-        highlights, person_masks=masks, canvas_size=canvas_size,
-        fonts_dir=args.fonts_dir, seed=args.seed,
-    )
-    log.info(
-        "Decision: %d elements (%d text, %d decoration)",
-        len(decision.elements),
-        sum(1 for e in decision.elements if e.type == "text"),
-        sum(1 for e in decision.elements if e.type == "decoration"),
-    )
 
-    # ---- Step 6: render ----
+def _render_decision_path(args, decision: Decision, log: logging.Logger) -> int:
+    """Encode + optional audio mix. Shared by the lyrics-driven and
+    --elements-json branches."""
     log.info("Rendering to %s…", args.out)
     out = render_from_decision(
         args.video, decision, args.out,
@@ -272,11 +341,8 @@ def main(argv: list[str] | None = None) -> int:
         assets_dir=args.assets_dir if args.assets_dir.exists() else None,
         preview=args.preview,
     )
-
-    # ---- Step 7: optional audio mix ----
     if args.audio and args.mix_audio:
         out = _maybe_mix_audio(out, args.audio, args.mix_audio, log)
-
     print(f"wrote {out}")
     return 0
 

@@ -1,0 +1,26 @@
+{
+  "_comment": "Closed-vocabulary list. The LLM (and rule_based fallback) MUST output tags from this set only. Any other tag is rejected and falls back to FALLBACK_TAG ('heart'). Categories group same-flavour tags so asset_retrieval can substitute within a category when a tag's PNG is missing.",
+  "fallback_tag": "heart",
+  "tags": [
+    {"id": "heart",         "category": "emotion",       "description": "love, affection, romance, soft feelings"},
+    {"id": "teardrop",      "category": "emotion",       "description": "sadness, longing, tears, melancholy"},
+    {"id": "kiss",          "category": "emotion",       "description": "kiss, lips, sweet affection"},
+    {"id": "sparkle",       "category": "decorative",    "description": "shine, twinkle, magical glitter"},
+    {"id": "ribbon",        "category": "decorative",    "description": "ribbon, bow, gift, cute decoration"},
+    {"id": "flower",        "category": "decorative",    "description": "flower, blossom, petal, spring"},
+    {"id": "star",          "category": "decorative",    "description": "star, twinkle, dream, night sky"},
+    {"id": "fire",          "category": "energy",        "description": "passion, hot, burning, fiery emotion"},
+    {"id": "lightning",     "category": "energy",        "description": "shock, jolt, electric, sudden impact"},
+    {"id": "burst",         "category": "energy",        "description": "explosion, bang, sudden release"},
+    {"id": "exclaim",       "category": "emphasis",      "description": "exclamation, surprise, wow, attention"},
+    {"id": "sun",           "category": "weather",       "description": "sun, sunshine, warm, bright daytime"},
+    {"id": "moon",          "category": "weather",       "description": "moon, midnight, dream, night"},
+    {"id": "cloud",         "category": "weather",       "description": "cloud, sky, dreamy, drifting"},
+    {"id": "rainbow",       "category": "weather",       "description": "rainbow, hope, after the rain"},
+    {"id": "leaf",          "category": "nature",        "description": "leaf, plant, green, organic"},
+    {"id": "music_note",    "category": "audio",         "description": "song, music, melody, singing"},
+    {"id": "speech_bubble", "category": "communication", "description": "speak, call, message, hello"},
+    {"id": "arrow",         "category": "communication", "description": "direction, pointing, focus here, look"},
+    {"id": "dot",           "category": "emphasis",      "description": "dot, beat, period, small accent"}
+  ]
+}

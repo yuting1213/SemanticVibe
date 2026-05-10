@@ -18,12 +18,20 @@ from semanticvibe.assets.library import AssetLibrary
 from semanticvibe.render import idle_animations
 from semanticvibe.render.animations import AnimationState, ENTRY_DURATION, EXIT_DURATION, evaluate
 from semanticvibe.render.hero_text import render_hero
-from semanticvibe.render.text_render import fit_to_canvas, measure_text, render_text
+from semanticvibe.render.text_render import (
+    fit_subtitle_banner_to_canvas,
+    fit_to_canvas,
+    measure_text,
+    render_subtitle_banner,
+    render_text,
+    resolve_subtitle_banner_anchor,
+)
 from semanticvibe.schemas.decision import (
     Decision,
     DecorationElement,
     Element,
     HeroTextElement,
+    SubtitleBannerElement,
     TextElement,
 )
 
@@ -106,6 +114,21 @@ def _tint_rgba(img: Image.Image, hex_color: str) -> Image.Image:
     return Image.fromarray(pixels, mode="RGBA")
 
 
+_V6_RETRIEVER_SINGLETON = None
+
+
+def _v6_retriever():
+    """Lazy singleton — `AssetRetriever` reads `assets/index.json` once."""
+    global _V6_RETRIEVER_SINGLETON
+    if _V6_RETRIEVER_SINGLETON is None:
+        try:
+            from semanticvibe.asset_retrieval import AssetRetriever
+            _V6_RETRIEVER_SINGLETON = AssetRetriever()
+        except Exception:  # noqa: BLE001 — index missing / unreadable, accept it
+            _V6_RETRIEVER_SINGLETON = False
+    return _V6_RETRIEVER_SINGLETON or None
+
+
 def _load_decoration_base(
     element: DecorationElement,
     library: AssetLibrary,
@@ -114,18 +137,27 @@ def _load_decoration_base(
 ) -> Image.Image | None:
     """Load the asset PNG (no jitter) and resize to override_size or base_size.
 
-    Exact-tag lookup only by default. Loading the CLIP model just to
-    resolve a missing tag is expensive (5+ s) and pulls open_clip →
-    transformers → sklearn → pandas → pyarrow into the process; on
-    Windows the pyarrow import has been observed to hit WinError 6714
-    when scanning DLL directories. So missing tags now silently return
-    None — the caller skips the decoration. Use `assets.clip_search.
-    find_asset` directly if you genuinely want fuzzy matching.
+    Exact-tag lookup against the legacy `AssetLibrary` first, then fall
+    back to the v6 `AssetRetriever` (which reads `assets/index.json`
+    and substitutes same-category siblings when a tag has no PNGs).
+    Returns None when both sources have nothing — caller skips the
+    decoration. CLIP fuzzy matching is intentionally off (loading
+    open_clip → transformers → pyarrow has hit WinError 6714 on
+    Windows); use `assets.clip_search.find_asset` directly when needed.
     """
     matches = library.by_tag(element.asset_tag)
-    if not matches:
+    src_path = matches[0].path if matches else None
+
+    if src_path is None:
+        retriever = _v6_retriever()
+        if retriever is not None:
+            rec = retriever.get(element.asset_tag, avoid_recent=True)
+            if rec is not None:
+                src_path = retriever.repo_root / rec["file"]
+
+    if src_path is None:
         return None
-    img = Image.open(matches[0].path).convert("RGBA")
+    img = Image.open(src_path).convert("RGBA")
     target = override_size if override_size is not None else element.base_size
     if target is not None:
         scale = target / max(img.width, img.height)
@@ -163,12 +195,18 @@ def _prepare_decoration_copies(
     text_anchors: dict[int, tuple[int, int]],
     text_sizes: dict[int, tuple[int, int]],
     seed: int,
+    palette_hexes: list[str] | None = None,
 ) -> list[tuple[Image.Image, tuple[int, int]]]:
     """Build the (base_tile, top-left) list for `element`.
 
     Single-shot returns one entry. `count > 1 + scatter` spreads `count`
     entries either across the whole frame (default) or inside `scatter_zone`
     if set. `size_steps` cycles per-copy base sizes for big/medium/small mix.
+
+    When `palette_hexes` is provided + the decoration's `color_tint` is
+    empty, each copy is loaded as a *different* PNG drawn from the v6
+    AssetRetriever, cycled through the palette's colour buckets so a
+    scatter of `heart` ends up with pink hearts AND green hearts mixed.
     """
     canvas_w, canvas_h = canvas_size
     rng = random.Random(seed)
@@ -177,8 +215,29 @@ def _prepare_decoration_copies(
     # Per-copy size override list (cycled).
     size_cycle = element.size_steps or [None]
     cached_bases: dict[int | None, Image.Image] = {}
+    per_copy_bases: list[Image.Image | None] | None = None
 
-    def _get_base(size_key: int | None) -> Image.Image | None:
+    # Colour-balanced multi-pick (only when no explicit per-copy tint).
+    if palette_hexes and not element.color_tint and element.scatter and element.count > 1:
+        retriever = _v6_retriever()
+        if retriever is not None:
+            recs = retriever.get_balanced(
+                element.asset_tag, element.count, palette_hexes,
+            )
+            if recs:
+                target_size = element.base_size or 80
+                per_copy_bases = []
+                for rec in recs:
+                    src = retriever.repo_root / rec["file"]
+                    img = Image.open(src).convert("RGBA")
+                    scale = target_size / max(img.width, img.height)
+                    new_w = max(1, int(round(img.width * scale)))
+                    new_h = max(1, int(round(img.height * scale)))
+                    per_copy_bases.append(img.resize((new_w, new_h), Image.LANCZOS))
+
+    def _get_base(size_key: int | None, copy_idx: int = 0) -> Image.Image | None:
+        if per_copy_bases is not None:
+            return per_copy_bases[copy_idx % len(per_copy_bases)]
         if size_key not in cached_bases:
             base = _load_decoration_base(element, library, override_size=size_key)
             if base is None:
@@ -187,7 +246,7 @@ def _prepare_decoration_copies(
         return cached_bases[size_key]
 
     # If no size_steps provided, _get_base(None) uses element.base_size.
-    if _get_base(size_cycle[0]) is None:
+    if _get_base(size_cycle[0], 0) is None:
         return []
 
     if element.scatter and element.count > 1:
@@ -199,7 +258,7 @@ def _prepare_decoration_copies(
 
         for i in range(element.count):
             size_key = size_cycle[i % len(size_cycle)]
-            base = _get_base(size_key)
+            base = _get_base(size_key, copy_idx=i)
             if base is None:
                 continue
             color = element.color_tint[i % len(element.color_tint)] if element.color_tint else None
@@ -240,7 +299,7 @@ def _prepare_decoration_copies(
     else:
         for i in range(element.count):
             size_key = size_cycle[i % len(size_cycle)]
-            base = _get_base(size_key)
+            base = _get_base(size_key, copy_idx=i)
             if base is None:
                 continue
             color = element.color_tint[i % len(element.color_tint)] if element.color_tint else None
@@ -384,21 +443,31 @@ def _make_frame_factory(
     fitted_text: dict[int, TextElement] = {}
     text_anchors: dict[int, tuple[int, int]] = {}
     text_sizes: dict[int, tuple[int, int]] = {}
+    fitted_banner: dict[int, SubtitleBannerElement] = {}
+    banner_anchors: dict[int, tuple[int, int]] = {}
     for idx, el in enumerate(decision.elements):
         if isinstance(el, TextElement):
             fitted = fit_to_canvas(el, fonts_dir, canvas_size)
             fitted_text[idx] = fitted
             text_anchors[idx] = _resolve_text_anchor(fitted, fonts_dir, canvas_size)
             text_sizes[idx] = measure_text(fitted, fonts_dir)
+        elif isinstance(el, SubtitleBannerElement):
+            fb = fit_subtitle_banner_to_canvas(el, fonts_dir, canvas_size)
+            fitted_banner[idx] = fb
+            banner_anchors[idx] = resolve_subtitle_banner_anchor(
+                fb, fonts_dir, canvas_size,
+            )
 
     # Each DecorationElement → list of (tile, anchor) pairs. count=1 yields
     # one pair; count>1 + scatter yields N pairs spread across the canvas.
+    palette_hexes = list(decision.global_style.color_palette) if decision.global_style else []
     decoration_copies: dict[int, list[tuple[Image.Image, tuple[int, int]]]] = {}
     if library is not None:
         for idx, el in enumerate(decision.elements):
             if isinstance(el, DecorationElement):
                 copies = _prepare_decoration_copies(
-                    el, library, canvas_size, text_anchors, text_sizes, seed=idx
+                    el, library, canvas_size, text_anchors, text_sizes,
+                    seed=idx, palette_hexes=palette_hexes,
                 )
                 if copies:
                     decoration_copies[idx] = copies
@@ -420,6 +489,28 @@ def _make_frame_factory(
                     continue
                 tile, top_left = result
                 _paste_rgba(canvas, tile, top_left)
+                continue
+
+            if isinstance(element, SubtitleBannerElement):
+                # Simple 0.4s fade-in / 0.4s fade-out, no entry animation
+                # registry — the banner reads as on-screen lyric, not a beat.
+                if t < element.start_time or t > element.end_time:
+                    continue
+                fade = 0.4
+                if t < element.start_time + fade:
+                    alpha = (t - element.start_time) / fade
+                elif t > element.end_time - fade:
+                    alpha = (element.end_time - t) / fade
+                else:
+                    alpha = 1.0
+                alpha = max(0.0, min(1.0, alpha))
+                if alpha <= 0:
+                    continue
+                state = AnimationState(alpha=alpha)
+                tile = render_subtitle_banner(
+                    fitted_banner[idx], state, fonts_dir,
+                )
+                _paste_rgba(canvas, tile, banner_anchors[idx])
                 continue
 
             # Pick entry animation: TextElement and DecorationElement both

@@ -1,345 +1,695 @@
-"""Lyrics → highlights with decoration tags.
+"""Lyrics → AlignmentResult (highlights + non-hooks).
 
-Walks a list of `(time, text)` lyric tuples and produces `Highlight`
-records — each picks a phrase to overlay on screen and (optionally)
-which decoration from the asset library to place alongside it.
+v6 rewrite. Closed-vocabulary semantic alignment:
 
-Three providers, all with the same `align(lyrics) -> list[Highlight]`
-signature:
+- The tag set is loaded once from `assets/tag_vocabulary.json` and is
+  authoritative. The LLM is told to pick *only* from this list; rule-based
+  matches the same set. Anything else falls back to FALLBACK_TAG.
+- `Highlight` is a Pydantic model carrying `tags: list[str]` and a
+  `primary_tag` so a single line can imply multiple decorations
+  (e.g. 「電波好き」 → [lightning, heart]).
+- `AlignmentResult` separates "highlights" (lines worth painting on screen)
+  from "non_hooks" (filler — the LLM saw them but chose not to highlight).
+- Two providers:
+    * `rule_based` — offline keyword dict (`KEYWORD_TO_TAGS`).
+    * `claude`     — strict-JSON Claude call, MD5-cached at
+                     `.cache/alignment/<key>.json` so repeated renders cost
+                     zero. Cache key = md5(model + lyrics + song_title +
+                     vocab fingerprint).
 
-- **rule_based** (default, offline) — keyword matching against
-  TAG_VOCABULARY. Cheap, deterministic, multilingual.
-- **claude** — sends lyrics + tag vocab to Claude (Haiku 4.5 in dev
-  mode), which picks the most evocative phrases and assigns tags.
-- **openai** — same flow via GPT-4o-mini.
-
-This module is the v5 successor to the old `llm.heuristic` /
-`llm.client.decide` pair: it produces structured `Highlight`s that
-`build_elements` then assembles into a `Decision`. The point of the
-indirection is to keep "what to say" (alignment) separate from "where
-to put it" (layout) — which is what makes auto person-avoidance
-tractable.
+The legacy `align(...)` function (returning `list[Highlight]`-as-dataclass)
+is kept as a thin shim over `align_lyrics(...)` so the existing CLI keeps
+working until callers migrate.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-log = logging.getLogger(__name__)
+from pydantic import BaseModel, Field
 
-Provider = Literal["rule_based", "claude", "openai"]
-
-
-# ---------------------------------------------------------------------------
-# Tag vocabulary — keyword → asset_tag mapping
-# ---------------------------------------------------------------------------
-#
-# Each tag corresponds to a sticker filename in data/assets_lib/. Triggers
-# are matched case-insensitively as substrings. Multilingual on purpose:
-# Mandarin / Cantonese / Japanese / English overlap a lot in idol-pop
-# lyrics so we just throw all spellings of the same idea into one bucket.
-#
-# When a lyric phrase matches multiple tags, the first one wins (priority
-# ordering is the dict iteration order). To bias toward "wow" tags
-# (lightning / fire / impact) put those above "soft" tags (heart / flower).
-
-TAG_VOCABULARY: dict[str, list[str]] = {
-    # Tag must exist in data/assets_lib/metadata.json — otherwise the
-    # render path silently drops the decoration. The current procedural
-    # asset set is: heart / mini_heart / sparkle / star / dot / burst /
-    # arrow / fire / exclaim. The vocabulary maps cross-language semantic
-    # buckets onto those available tags. Lightning / flower / etc. that
-    # don't have an asset get aliased to the closest visual match
-    # (lightning → exclaim, since both are "energy / impact" stickers).
-
-    # Wow / energy
-    "exclaim":   ["wow", "ah", "oh", "わあ", "やった", "impact", "bam", "drop",
-                  # lightning / 電波 / 雷 — alias to exclaim (jagged impact star).
-                  "lightning", "電波", "雷", "閃電", "電", "shock", "thunder"],
-    "fire":      ["fire", "火", "flame", "炎", "情熱", "燃", "hot", "spicy", "やばい"],
-    "burst":     ["burst", "爆", "彈", "pop", "celebration"],
-    # Affection / cuteness
-    "heart":     ["heart", "好き", "愛", "love", "戀", "愛してる", "心", "嬉しい"],
-    "mini-heart":["可愛い", "kawaii", "cute", "cutie", "可愛", "lovely",
-                  # flower / 花 / 桜 — alias to mini-heart since we have no flower asset.
-                  "flower", "花", "blossom", "桜", "petal", "甜"],
-    # Reflection / softer notes
-    "star":      ["star", "星", "twinkle", "輝", "夢", "dream",
-                  # moon / 月 / cloud — alias to star (closest "celestial" sticker).
-                  "moon", "月", "夜", "night", "midnight",
-                  "cloud", "雲", "sky", "空"],
-    "sparkle":   ["sparkle", "shine", "kira", "キラ", "shimmer", "春"],
-    "arrow":     ["arrow", "→", "look", "here", "this", "向"],
-    "dot":       ["dot", "spot", "point", "圓"],
-}
-
-
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
-
-# Re-export the canonical Pydantic LyricLine from semanticvibe.lyrics so
-# callers writing `from semanticvibe.semantic_align import LyricLine` still
-# work — the underlying type is the schema-validated one.
 from semanticvibe.lyrics import LyricLine
 
+log = logging.getLogger(__name__)
 
-@dataclass
-class Highlight:
-    """A single overlay-worthy moment.
+Provider = Literal["rule_based", "claude", "ollama"]
 
-    `decoration_tag` is what we'll feed to the asset library; None means
-    no decoration (just the text). `strength` is 0–1 and roughly maps to
-    "how punchy should the entry animation be" — used downstream by
-    build_elements to pick scale_pop / fade / etc.
 
-    `duration` is forwarded from the input LyricLine (when set). build_elements
-    falls back to a gap-based heuristic if it's None.
-    """
+# ---------------------------------------------------------------------------
+# Closed tag vocabulary — single source of truth, loaded from JSON
+# ---------------------------------------------------------------------------
 
-    lyric_time: float
-    lyric_text: str
-    decoration_tag: str | None = None
-    strength: float = 0.5
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_VOCAB_PATH = _REPO_ROOT / "assets" / "tag_vocabulary.json"
+
+
+def _load_vocab() -> tuple[list[dict], str]:
+    """Returns (tag_records, fallback_tag). Errors hard if file is missing —
+    the closed vocab is not optional for v6."""
+    if not _VOCAB_PATH.exists():
+        raise FileNotFoundError(
+            f"tag vocabulary not found at {_VOCAB_PATH}; run from a complete checkout."
+        )
+    with _VOCAB_PATH.open(encoding="utf-8") as f:
+        raw = json.load(f)
+    return list(raw["tags"]), str(raw.get("fallback_tag", "heart"))
+
+
+VOCAB, FALLBACK_TAG = _load_vocab()
+VALID_TAGS: set[str] = {t["id"] for t in VOCAB}
+TAG_CATEGORY: dict[str, str] = {t["id"]: t["category"] for t in VOCAB}
+
+
+# ---------------------------------------------------------------------------
+# rule_based keyword → tags dictionary
+# ---------------------------------------------------------------------------
+#
+# Multi-tag on purpose: a single phrase can imply more than one sticker,
+# and primary_tag is just `tags[0]`. Triggers are matched as case-insensitive
+# substrings; longest-matching trigger across all keys wins so 「可愛い」 (kawaii)
+# doesn't get poached by 「愛」 (love).
+#
+# Every tag here MUST be in VALID_TAGS — defensive check at module load.
+
+KEYWORD_TO_TAGS: dict[str, list[str]] = {
+    # ----- emotion -----
+    "好き":      ["heart"],
+    "愛":        ["heart"],
+    "love":      ["heart"],
+    "戀":        ["heart"],
+    "心":        ["heart"],
+    "嬉しい":     ["heart"],
+    "可愛い":     ["heart", "sparkle"],
+    "kawaii":    ["heart", "sparkle"],
+    "cute":      ["heart"],
+    "tear":      ["teardrop"],
+    "cry":       ["teardrop"],
+    "涙":        ["teardrop"],
+    "泣":        ["teardrop"],
+    "悲":        ["teardrop"],
+    "sad":       ["teardrop"],
+    "kiss":      ["kiss"],
+    "唇":        ["kiss"],
+    "ちゅ":       ["kiss"],
+
+    # ----- decorative -----
+    "sparkle":   ["sparkle"],
+    "shine":     ["sparkle"],
+    "kira":      ["sparkle"],
+    "キラ":       ["sparkle"],
+    "shimmer":   ["sparkle"],
+    "輝":        ["sparkle"],
+    "ribbon":    ["ribbon"],
+    "bow":       ["ribbon"],
+    "リボン":     ["ribbon"],
+    "flower":    ["flower"],
+    "花":        ["flower"],
+    "桜":        ["flower"],
+    "petal":     ["flower"],
+    "blossom":   ["flower"],
+    "star":      ["star"],
+    "星":        ["star"],
+    "twinkle":   ["star", "sparkle"],
+    "夢":        ["star"],
+    "dream":     ["star"],
+
+    # ----- energy -----
+    "fire":      ["fire"],
+    "火":        ["fire"],
+    "炎":        ["fire"],
+    "flame":     ["fire"],
+    "情熱":      ["fire"],
+    "燃":        ["fire"],
+    "hot":       ["fire"],
+    "lightning": ["lightning"],
+    "電波":      ["lightning"],
+    "雷":        ["lightning"],
+    "閃電":      ["lightning"],
+    "shock":     ["lightning"],
+    "thunder":   ["lightning"],
+    "burst":     ["burst"],
+    "爆":        ["burst"],
+    "彈":        ["burst"],
+    "pop":       ["burst"],
+
+    # ----- emphasis -----
+    "wow":       ["exclaim"],
+    "ah":        ["exclaim"],
+    "oh":        ["exclaim"],
+    "わあ":       ["exclaim"],
+    "やった":     ["exclaim"],
+    "impact":    ["exclaim"],
+    "やばい":     ["exclaim", "fire"],
+    "!":         ["exclaim"],
+    "!":         ["exclaim"],
+    "dot":       ["dot"],
+
+    # ----- weather -----
+    "sun":       ["sun"],
+    "太陽":      ["sun"],
+    "陽":        ["sun"],
+    "暖":        ["sun"],
+    "moon":      ["moon"],
+    "月":        ["moon"],
+    "夜":        ["moon"],
+    "midnight":  ["moon"],
+    "night":     ["moon"],
+    "cloud":     ["cloud"],
+    "雲":        ["cloud"],
+    "sky":       ["cloud"],
+    "空":        ["cloud"],
+    "rainbow":   ["rainbow"],
+    "虹":        ["rainbow"],
+
+    # ----- nature -----
+    "leaf":      ["leaf"],
+    "葉":        ["leaf"],
+    "草":        ["leaf"],
+    "green":     ["leaf"],
+
+    # ----- audio -----
+    "歌":        ["music_note"],
+    "music":     ["music_note"],
+    "song":      ["music_note"],
+    "sing":      ["music_note"],
+    "melody":    ["music_note"],
+    "beat":      ["music_note"],
+    "♪":         ["music_note"],
+    "♫":         ["music_note"],
+
+    # ----- communication -----
+    "もしもし":   ["speech_bubble"],
+    "hello":     ["speech_bubble"],
+    "hi":        ["speech_bubble"],
+    "hey":       ["speech_bubble"],
+    "你好":      ["speech_bubble"],
+    "話":        ["speech_bubble"],
+    "言":        ["speech_bubble"],
+    "arrow":     ["arrow"],
+    "→":          ["arrow"],
+    "look":      ["arrow"],
+}
+
+# Defensive — every tag in KEYWORD_TO_TAGS must be in the closed vocab.
+_unknown = {t for tags in KEYWORD_TO_TAGS.values() for t in tags} - VALID_TAGS
+if _unknown:
+    raise RuntimeError(
+        f"KEYWORD_TO_TAGS references unknown tags: {sorted(_unknown)} — "
+        f"must be subset of {sorted(VALID_TAGS)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schemas (v6)
+# ---------------------------------------------------------------------------
+
+
+class Highlight(BaseModel):
+    """A single overlay-worthy moment."""
+
+    time: float = Field(ge=0)
+    text: str = Field(min_length=1)
+    is_hook: bool = Field(
+        default=False,
+        description="True for the song's most punchy / quotable moments. "
+        "build_elements emits hero_text only for hooks; non-hooks become "
+        "regular text overlays.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Decoration tags applied to this line, in priority order. "
+        "All values must be members of the closed vocabulary; primary_tag is "
+        "simply tags[0] when non-empty.",
+    )
+    primary_tag: str | None = None
     reasoning: str = ""
-    duration: float | None = None
+    duration: float | None = Field(default=None, gt=0)
+
+    # Backward-compat alias: older callers used .lyric_time / .lyric_text.
+    @property
+    def lyric_time(self) -> float:
+        return self.time
+
+    @property
+    def lyric_text(self) -> str:
+        return self.text
+
+    @property
+    def decoration_tag(self) -> str | None:
+        """Compat shim: pre-v6 callers expect a single tag."""
+        return self.primary_tag
+
+    @property
+    def strength(self) -> float:
+        """Compat shim: pre-v6 callers branch on this."""
+        return 0.85 if self.is_hook else (0.6 if self.tags else 0.35)
+
+
+class AlignmentResult(BaseModel):
+    """The full alignment output: tagged highlights + ungated lyric lines."""
+
+    highlights: list[Highlight]
+    non_hooks: list[str] = Field(
+        default_factory=list,
+        description="Plain lyric texts that did not get a hook treatment "
+        "(no decoration, no hero). build_elements may still display them as "
+        "ordinary text overlays.",
+    )
 
 
 # ---------------------------------------------------------------------------
-# Provider: rule_based
+# rule_based provider
 # ---------------------------------------------------------------------------
 
 
-def _find_tag(text: str) -> str | None:
-    """Return the TAG_VOCABULARY tag whose longest trigger appears in `text`.
+def _match_tags_for_text(text: str) -> list[str]:
+    """Return all tags whose triggers appear in `text`, longest-trigger-first.
 
-    Longest-match wins: 「可愛い」 (5 chars) beats heart's 「愛」 (1 char) so
-    'kawaii' lyrics resolve to mini-heart instead of generic heart. Without
-    this, dict iteration order silently steals more-specific tags away from
-    the right bucket.
+    Multi-tag: 「電波好き」 → [lightning, heart]. Each tag is reported once.
     """
     lowered = text.lower()
-    # Build (tag, trigger, len) tuples sorted by trigger length, longest first.
-    candidates = [
-        (tag, trigger.lower())
-        for tag, triggers in TAG_VOCABULARY.items()
-        for trigger in triggers
-    ]
-    candidates.sort(key=lambda tt: len(tt[1]), reverse=True)
-    for tag, trigger in candidates:
-        if trigger and trigger in lowered:
-            return tag
-    return None
+    triggers = sorted(KEYWORD_TO_TAGS.items(), key=lambda kv: -len(kv[0]))
+    seen: list[str] = []
+    for trig, tags in triggers:
+        if trig and trig.lower() in lowered:
+            for t in tags:
+                if t not in seen:
+                    seen.append(t)
+    return seen
 
 
-def _rule_based_align(lyrics: list[LyricLine]) -> list[Highlight]:
-    """Walk lyrics, emit a Highlight for every line.
+def _is_hook(text: str, tags: list[str]) -> bool:
+    """Heuristic: a line is a hook if it matched ≥1 tag *and* is short.
+    Long lines (more than 6 CJK / 16 Latin chars) read more like prose, so
+    we keep them as regular highlights even if tagged."""
+    if not tags:
+        return False
+    cjk = sum(1 for c in text if "　" <= c <= "鿿")
+    if cjk:
+        return cjk <= 6
+    return len(text) <= 16
 
-    Each line gets:
-    - decoration_tag from TAG_VOCABULARY if any keyword matches, else None
-    - strength = 0.8 if a tag matched (it's evocative), else 0.4 (filler)
-    - duration forwarded from the input LyricLine (None → gap heuristic)
-    """
+
+def _rule_based_align(lyrics: list[LyricLine]) -> AlignmentResult:
     highlights: list[Highlight] = []
+    non_hooks: list[str] = []
     for line in lyrics:
-        tag = _find_tag(line.text)
-        highlights.append(
-            Highlight(
-                lyric_time=line.time,
-                lyric_text=line.text,
-                decoration_tag=tag,
-                strength=0.8 if tag else 0.4,
-                reasoning=(
-                    f"keyword match → tag={tag!r}" if tag else "no keyword match"
-                ),
-                duration=getattr(line, "duration", None),
-            )
-        )
-    return highlights
+        tags = _match_tags_for_text(line.text)
+        if tags:
+            highlights.append(Highlight(
+                time=line.time,
+                text=line.text,
+                is_hook=_is_hook(line.text, tags),
+                tags=tags,
+                primary_tag=tags[0],
+                reasoning=f"keyword match → {tags!r}",
+                duration=line.duration,
+            ))
+        else:
+            # Untagged line — keep the text but mark non-hook so downstream
+            # can decide whether to render it plainly.
+            highlights.append(Highlight(
+                time=line.time,
+                text=line.text,
+                is_hook=False,
+                tags=[],
+                primary_tag=None,
+                reasoning="no keyword match",
+                duration=line.duration,
+            ))
+            non_hooks.append(line.text)
+    return AlignmentResult(highlights=highlights, non_hooks=non_hooks)
 
 
 # ---------------------------------------------------------------------------
-# Provider: claude / openai
+# claude provider — strict JSON, MD5-cached
 # ---------------------------------------------------------------------------
 
 
-_LLM_SYSTEM_PROMPT = """You are an art director for animated lyric videos.
+_CACHE_DIR = _REPO_ROOT / ".cache" / "alignment"
 
-You receive a JSON list of lyric lines, each with a timestamp and text. You
-must pick which lines are worth highlighting on screen and assign each one
-a decoration tag from the provided vocabulary.
 
-Constraints:
-1. Output JSON only. No prose, no explanations outside the schema.
-2. For each input lyric line, output one Highlight object:
-   - lyric_time: copy from input
-   - lyric_text: the text to display (you may shorten if the original line
-     is too long — aim for ≤ 8 characters for impact)
-   - decoration_tag: a tag from the vocabulary, or null if no tag fits
-   - strength: 0.0 to 1.0 — 1.0 for the song's most punchy moments,
-     0.3 for filler. Roughly 1/3 of lines should be ≥ 0.7.
-   - reasoning: one sentence on why this line + tag.
+def _vocab_fingerprint() -> str:
+    """Stable fingerprint of the closed vocab — busts cache when vocab edits."""
+    return hashlib.md5(
+        json.dumps(sorted(VALID_TAGS), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:8]
 
-Vocabulary (only these tags are valid; null is also valid):
-{vocab_summary}
 
-Output schema:
+def _cache_key(
+    model: str,
+    lyrics: list[LyricLine],
+    song_title: str | None,
+    *,
+    backend: str = "claude",
+) -> str:
+    payload = {
+        "backend": backend,
+        "model": model,
+        "vocab": _vocab_fingerprint(),
+        "song_title": song_title or "",
+        "lyrics": [{"time": L.time, "text": L.text, "duration": L.duration} for L in lyrics],
+    }
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.md5(blob).hexdigest()
+
+
+def _load_cache(key: str) -> AlignmentResult | None:
+    f = _CACHE_DIR / f"{key}.json"
+    if not f.exists():
+        return None
+    try:
+        return AlignmentResult.model_validate_json(f.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - corrupt cache, regenerate
+        log.warning("cache miss (corrupt): %s (%s)", f.name, exc)
+        return None
+
+
+def _save_cache(key: str, result: AlignmentResult) -> None:
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (_CACHE_DIR / f"{key}.json").write_text(
+        result.model_dump_json(indent=2), encoding="utf-8",
+    )
+
+
+_CLAUDE_SYSTEM_PROMPT = """You are an art director for animated lyric music videos.
+
+Given a list of lyric lines and (optionally) a song title, decide which lines
+deserve a visual highlight on screen. For each highlight, choose decoration
+sticker tags from the CLOSED vocabulary below — you may NOT invent new tags.
+
+Output STRICT JSON. No prose, no markdown fences, no explanations outside the
+JSON. The schema is:
+
 {
   "highlights": [
-    {"lyric_time": 2.5, "lyric_text": "...", "decoration_tag": "heart",
-     "strength": 0.8, "reasoning": "..."},
-    ...
-  ]
+    {
+      "time":        <float, copy from input>,
+      "text":        <string, copy or shorten the lyric for impact>,
+      "is_hook":     <bool, true for the song's punchiest 1-3 moments>,
+      "tags":        [<tag>, <tag>, ...],     // 0-3 tags from the closed list
+      "primary_tag": <tag or null>,           // null when tags == []
+      "reasoning":   <one sentence on the choice>
+    }
+  ],
+  "non_hooks": [<lyric texts that you did NOT highlight>]
 }
+
+Closed vocabulary (id — category — meaning):
+{vocab_block}
+
+Rules:
+- Output one highlight object per *highlighted* lyric line. Skip filler.
+- ~1 in 3 lines should be marked is_hook=true; the rest are normal highlights.
+- primary_tag must be tags[0] when tags is non-empty, else null.
+- Every tag in `tags` MUST be a literal id from the vocabulary above.
+- non_hooks holds the texts of lyric lines you decided not to highlight.
 """
 
 
-def _llm_align(
+def _format_vocab_block() -> str:
+    return "\n".join(
+        f"  - {t['id']:<14} — {t['category']:<13} — {t['description']}"
+        for t in VOCAB
+    )
+
+
+def _claude_align(
     lyrics: list[LyricLine],
     *,
-    provider: Provider,
-) -> list[Highlight]:
-    """Send lyrics + tag vocabulary to an LLM, parse Highlights from JSON."""
-    if provider == "claude":
-        from anthropic import Anthropic
+    song_title: str | None = None,
+    model: str = "claude-haiku-4-5",
+    use_cache: bool = True,
+) -> AlignmentResult:
+    key = _cache_key(model, lyrics, song_title, backend="claude")
+    if use_cache:
+        hit = _load_cache(key)
+        if hit is not None:
+            log.info("[align/claude] cache hit: %s", key[:8])
+            return hit
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        client = Anthropic(api_key=api_key)
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
 
-        vocab_summary = "\n".join(
-            f"  - {tag}: {', '.join(triggers[:5])}"
-            for tag, triggers in TAG_VOCABULARY.items()
-        )
-        sys_prompt = _LLM_SYSTEM_PROMPT.format(vocab_summary=vocab_summary)
-        user_prompt = "Lyrics:\n" + json.dumps(
-            [{"time": L.time, "text": L.text} for L in lyrics],
-            ensure_ascii=False,
-            indent=2,
-        )
+    from anthropic import Anthropic
+    client = Anthropic(api_key=api_key)
 
-        response = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=2048,
-            system=sys_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = "".join(
-            block.text for block in response.content
-            if getattr(block, "type", None) == "text"
-        )
-        return _parse_highlights_json(text)
+    system = _CLAUDE_SYSTEM_PROMPT.replace("{vocab_block}", _format_vocab_block())
+    user_payload = {
+        "song_title": song_title or "",
+        "lyrics": [{"time": L.time, "text": L.text} for L in lyrics],
+    }
+    user_msg = (
+        "Lyrics to align:\n"
+        + json.dumps(user_payload, ensure_ascii=False, indent=2)
+        + "\n\nReturn STRICT JSON matching the schema."
+    )
 
-    if provider == "openai":
-        from openai import OpenAI
-
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set")
-        client = OpenAI(api_key=api_key)
-
-        vocab_summary = "\n".join(
-            f"  - {tag}: {', '.join(triggers[:5])}"
-            for tag, triggers in TAG_VOCABULARY.items()
-        )
-        sys_prompt = _LLM_SYSTEM_PROMPT.format(vocab_summary=vocab_summary)
-        user_prompt = "Lyrics:\n" + json.dumps(
-            [{"time": L.time, "text": L.text} for L in lyrics],
-            ensure_ascii=False,
-            indent=2,
-        )
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-        )
-        return _parse_highlights_json(response.choices[0].message.content or "")
-
-    raise ValueError(f"unknown provider: {provider!r}")
-
-
-def _parse_highlights_json(raw: str) -> list[Highlight]:
-    """Tolerant JSON parser — strips ```json fences, finds first { ... }."""
-    text = raw.strip()
-    if text.startswith("```"):
-        # Strip ```json ... ``` fences.
-        text = text.strip("`").lstrip("json").strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # Find the outermost {...} via brace counting.
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1:
-            raise
-        data = json.loads(text[start : end + 1])
-
-    out: list[Highlight] = []
-    for h in data.get("highlights", []):
-        out.append(
-            Highlight(
-                lyric_time=float(h["lyric_time"]),
-                lyric_text=str(h["lyric_text"]),
-                decoration_tag=h.get("decoration_tag"),
-                strength=float(h.get("strength", 0.5)),
-                reasoning=str(h.get("reasoning", "")),
-            )
-        )
-    return out
+    response = client.messages.create(
+        model=model,
+        max_tokens=4096,
+        system=system,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    text = "".join(
+        b.text for b in response.content if getattr(b, "type", None) == "text"
+    )
+    result = _parse_strict_alignment_json(text, lyrics)
+    if use_cache:
+        _save_cache(key, result)
+        log.info("[align/claude] cache store: %s", key[:8])
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Public entry
+# ollama provider — local LLM via http://localhost:11434, JSON mode
+# ---------------------------------------------------------------------------
+
+
+_OLLAMA_DEFAULT_HOST = "http://localhost:11434"
+_OLLAMA_DEFAULT_MODEL = "gemma3:4b"
+
+
+def _ollama_align(
+    lyrics: list[LyricLine],
+    *,
+    song_title: str | None = None,
+    model: str = _OLLAMA_DEFAULT_MODEL,
+    host: str | None = None,
+    use_cache: bool = True,
+    timeout: float = 120.0,
+) -> AlignmentResult:
+    """Align via a local Ollama instance. Requires `ollama serve` listening
+    on `host` (default localhost:11434) with `model` already pulled.
+
+    Uses Ollama's `format: "json"` parameter to constrain output. Falls
+    back to the same strict-JSON parser used by the Claude path so the
+    cleanup + closed-vocab enforcement is identical.
+    """
+    import urllib.request
+    import urllib.error
+
+    key = _cache_key(model, lyrics, song_title, backend="ollama")
+    if use_cache:
+        hit = _load_cache(key)
+        if hit is not None:
+            log.info("[align/ollama] cache hit: %s", key[:8])
+            return hit
+
+    host = host or _OLLAMA_DEFAULT_HOST
+    system = _CLAUDE_SYSTEM_PROMPT.replace("{vocab_block}", _format_vocab_block())
+    user_payload = {
+        "song_title": song_title or "",
+        "lyrics": [{"time": L.time, "text": L.text} for L in lyrics],
+    }
+    user_msg = (
+        "Lyrics to align:\n"
+        + json.dumps(user_payload, ensure_ascii=False, indent=2)
+        + "\n\nReturn STRICT JSON matching the schema. Output only JSON, no prose."
+    )
+
+    req_body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {
+            "temperature": 0.2,
+            "num_ctx": 8192,
+        },
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{host}/api/chat",
+        data=req_body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Ollama unreachable at {host} ({exc}). Is `ollama serve` running?"
+        ) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"Ollama timed out after {timeout}s on model {model!r}"
+        ) from exc
+
+    text = (payload.get("message") or {}).get("content", "")
+    if not text:
+        raise RuntimeError(f"Ollama returned no content; raw payload: {payload}")
+    result = _parse_strict_alignment_json(text, lyrics)
+    if use_cache:
+        _save_cache(key, result)
+        log.info("[align/ollama] cache store: %s (model=%s)", key[:8], model)
+    return result
+
+
+def _parse_strict_alignment_json(
+    raw: str, lyrics: list[LyricLine],
+) -> AlignmentResult:
+    text = raw.strip()
+    if text.startswith("```"):
+        # Strip ```json ... ``` fences if the model wrapped its output anyway.
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        s, e = text.find("{"), text.rfind("}")
+        if s == -1 or e == -1:
+            raise
+        data = json.loads(text[s : e + 1])
+
+    cleaned: list[Highlight] = []
+    for h in data.get("highlights", []):
+        raw_tags = h.get("tags") or []
+        tags = [t for t in raw_tags if isinstance(t, str) and t in VALID_TAGS]
+        # Filter out invalid tags but keep the highlight; if the LLM picked
+        # *only* invalid tags, fall back to FALLBACK_TAG so the line still
+        # gets some visual treatment.
+        if raw_tags and not tags:
+            log.warning(
+                "LLM returned only invalid tags %r for line %r; falling back to %s",
+                raw_tags, h.get("text", ""), FALLBACK_TAG,
+            )
+            tags = [FALLBACK_TAG]
+        primary = tags[0] if tags else None
+        cleaned.append(Highlight(
+            time=float(h["time"]),
+            text=str(h["text"]),
+            is_hook=bool(h.get("is_hook", False)),
+            tags=tags,
+            primary_tag=primary,
+            reasoning=str(h.get("reasoning", "")),
+        ))
+
+    non_hooks = [str(s) for s in data.get("non_hooks", []) if isinstance(s, str)]
+
+    # ---- Backfill missing lyric lines as untagged highlights ----
+    # Smaller LLMs (e.g. gemma3:4b) tend to under-emit highlights — they
+    # may flag only the most obvious hook and dump everything else into
+    # non_hooks. In banner mode that means most lyric lines get NO subtitle
+    # at all. So: any input lyric NOT covered by a returned highlight gets
+    # synthesised as a no-tag, non-hook highlight using its original time
+    # and text. The renderer can then choose to display it (banner mode
+    # always does).
+    covered_texts = {h.text for h in cleaned}
+    for orig in lyrics:
+        if orig.text not in covered_texts:
+            cleaned.append(Highlight(
+                time=orig.time,
+                text=orig.text,
+                is_hook=False,
+                tags=[],
+                primary_tag=None,
+                reasoning="backfill: LLM omitted this line",
+                duration=orig.duration,
+            ))
+    cleaned.sort(key=lambda h: h.time)
+    return AlignmentResult(highlights=cleaned, non_hooks=non_hooks)
+
+
+# ---------------------------------------------------------------------------
+# Public entry — v6
+# ---------------------------------------------------------------------------
+
+
+def align_lyrics(
+    lyrics: list[LyricLine] | list[dict],
+    *,
+    provider: Provider = "rule_based",
+    song_title: str | None = None,
+    use_cache: bool = True,
+    ollama_model: str = _OLLAMA_DEFAULT_MODEL,
+    ollama_host: str | None = None,
+) -> AlignmentResult:
+    """v6 alignment entry point.
+
+    Returns a Pydantic `AlignmentResult` with `highlights` and `non_hooks`.
+    LLM providers (`claude`, `ollama`) cache hits in `.cache/alignment/<key>.json`.
+    On any provider failure, silently falls back to rule_based so we never
+    block the render pipeline.
+    """
+    parsed = [
+        L if isinstance(L, LyricLine) else LyricLine.model_validate(L)
+        for L in lyrics
+    ]
+    if provider == "rule_based":
+        return _rule_based_align(parsed)
+    if provider == "claude":
+        try:
+            return _claude_align(parsed, song_title=song_title, use_cache=use_cache)
+        except Exception as exc:  # noqa: BLE001 — never block the pipeline
+            log.warning(
+                "Claude alignment failed (%s); falling back to rule_based.", exc,
+            )
+            return _rule_based_align(parsed)
+    if provider == "ollama":
+        try:
+            return _ollama_align(
+                parsed,
+                song_title=song_title,
+                model=ollama_model,
+                host=ollama_host,
+                use_cache=use_cache,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "Ollama alignment failed (%s); falling back to rule_based.", exc,
+            )
+            return _rule_based_align(parsed)
+    raise ValueError(f"unknown provider: {provider!r}")
+
+
+# ---------------------------------------------------------------------------
+# Legacy compat — pre-v6 `align(...)` signature returning list[Highlight]
 # ---------------------------------------------------------------------------
 
 
 def align(
     lyrics: list[LyricLine] | list[dict],
     *,
-    provider: Provider = "rule_based",
+    provider: str = "rule_based",
 ) -> list[Highlight]:
-    """Align lyrics → list of Highlight.
-
-    Accepts either pre-parsed LyricLine objects or raw dicts of
-    `{"time": float, "text": str}` for convenience.
-    """
-    parsed: list[LyricLine] = []
-    for item in lyrics:
-        if isinstance(item, LyricLine):
-            parsed.append(item)
-        else:
-            # Dict input — let Pydantic validate (handles optional duration).
-            parsed.append(LyricLine.model_validate(item))
-
-    if provider == "rule_based":
-        return _rule_based_align(parsed)
-    if provider in ("claude", "openai"):
-        try:
-            return _llm_align(parsed, provider=provider)
-        except Exception as exc:  # noqa: BLE001 — fall back to rule_based on any LLM failure
-            log.warning(
-                "LLM provider %s failed (%s); falling back to rule_based.",
-                provider, exc,
-            )
-            return _rule_based_align(parsed)
-    raise ValueError(f"unknown provider: {provider!r}")
+    """Legacy shim. Returns just the highlights list (no AlignmentResult)."""
+    norm: Provider = "claude" if provider in ("claude", "openai") else "rule_based"
+    return align_lyrics(lyrics, provider=norm).highlights
 
 
 def load_lyrics(path: Path) -> list[LyricLine]:
-    """Convenience loader. Delegates to the canonical implementation in
-    `semanticvibe.lyrics` so schema validation lives in one place.
-    """
+    """Convenience loader. Delegates to `semanticvibe.lyrics.load_lyrics`."""
     from semanticvibe.lyrics import load_lyrics as _impl
-
     return _impl(path)

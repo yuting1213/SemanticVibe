@@ -242,8 +242,40 @@ class HeroTextElement(_ElementBase):
         return v
 
 
+SubtitlePosition = Literal["top_banner", "bottom_banner", "center"]
+
+
+class SubtitleBannerElement(_ElementBase):
+    """One full-line lyric chip — the baseline3-vibe rendering for v7.
+
+    Distinct from TextElement because:
+    - Background is a semi-transparent rounded rectangle behind the glyph row.
+    - Position is keyword-bucketed (top_banner / bottom_banner / center),
+      not a pixel anchor — the banner stretches to the canvas width minus
+      a configurable margin.
+    - Style fields collapse the multi-layer outline stack into a single
+      colour + width; outline + halo come from the style preset, not
+      authored per-element.
+    """
+
+    type: Literal["subtitle_banner"] = "subtitle_banner"
+    content: str = Field(min_length=1)
+    position: SubtitlePosition = "top_banner"
+    font: str = Field(default="KleeOne-SemiBold")
+    size: int = Field(default=42, gt=0)
+    text_color: str = "#FFFFFF"
+    outline_color: str = "#A0E847"
+    outline_width: int = Field(default=4, ge=0)
+    bg_color: str = "#A0E847"
+    bg_alpha: int = Field(default=140, ge=0, le=255)
+    corner_radius: int = Field(default=16, ge=0)
+    padding: int = Field(default=18, ge=0)
+    margin: int = Field(default=16, ge=0,
+                        description="Min pixels between banner and canvas edge.")
+
+
 Element = Annotated[
-    Union[TextElement, DecorationElement, HeroTextElement],
+    Union[TextElement, DecorationElement, HeroTextElement, SubtitleBannerElement],
     Field(discriminator="type"),
 ]
 

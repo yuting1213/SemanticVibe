@@ -16,7 +16,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from semanticvibe.render.animations import AnimationState
-from semanticvibe.schemas.decision import TextElement
+from semanticvibe.schemas.decision import SubtitleBannerElement, TextElement
 
 
 def _resolve_font_file(font_name: str, fonts_dir: Path) -> Path:
@@ -223,3 +223,155 @@ def render_text(
         img = img.rotate(state.rotation_deg, resample=Image.BICUBIC, expand=True)
 
     return img
+
+
+# ---------------------------------------------------------------------------
+# Subtitle banner — rounded-rect chip with outlined text inside
+# ---------------------------------------------------------------------------
+
+
+def measure_subtitle_banner(
+    element: SubtitleBannerElement, fonts_dir: Path,
+) -> tuple[int, int]:
+    """Return the rendered (width, height) of a subtitle banner including
+    background padding."""
+    font_path = str(_resolve_font_file(element.font, fonts_dir))
+    font = _load_font(font_path, element.size)
+    bbox = font.getbbox(element.content, stroke_width=element.outline_width)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    return (
+        text_w + element.padding * 2,
+        text_h + element.padding * 2,
+    )
+
+
+def fit_subtitle_banner_to_canvas(
+    element: SubtitleBannerElement,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int],
+    *,
+    min_size: int = 18,
+) -> SubtitleBannerElement:
+    """Shrink the font until the banner fits canvas width minus 2×margin."""
+    canvas_w, _ = canvas_size
+    max_w = max(min_size + element.padding * 2, canvas_w - 2 * element.margin)
+    current = element
+    for _ in range(8):
+        w, _h = measure_subtitle_banner(current, fonts_dir)
+        if w <= max_w or current.size <= min_size:
+            break
+        scale = (max_w / w) * 0.95
+        new_size = max(min_size, int(current.size * scale))
+        if new_size == current.size:
+            new_size = max(min_size, current.size - 1)
+        current = current.model_copy(update={"size": new_size})
+    return current
+
+
+def _hex_to_rgb(c: str) -> tuple[int, int, int]:
+    from PIL import ImageColor
+    return ImageColor.getrgb(c)[:3]
+
+
+def render_subtitle_banner(
+    element: SubtitleBannerElement,
+    state: AnimationState,
+    fonts_dir: Path,
+) -> Image.Image:
+    """Render a baseline3-style chip: rounded-rect background + outlined text
+    with a soft outer glow.
+
+    Layer order (bottom→top):
+      1. Rounded-rect background at `bg_alpha`/255 opacity.
+      2. Soft glow: a Gaussian-blurred copy of the outline-colour text,
+         rendered at 1.6x the outline width and ~50% opacity.
+      3. Crisp outlined text on top (stroke = outline_color, fill = text_color).
+    """
+    if state.alpha <= 0:
+        return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+
+    from PIL import ImageFilter
+
+    font_path = str(_resolve_font_file(element.font, fonts_dir))
+    font = _load_font(font_path, element.size)
+    visible = element.content
+    if state.reveal_fraction < 1.0:
+        n = max(1, int(round(len(element.content) * state.reveal_fraction)))
+        visible = element.content[:n]
+
+    bbox = font.getbbox(element.content, stroke_width=element.outline_width)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    w = text_w + element.padding * 2
+    h = text_h + element.padding * 2
+
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # 1. Rounded-rect background.
+    bg_rgba = _hex_to_rgb(element.bg_color) + (element.bg_alpha,)
+    draw.rounded_rectangle(
+        ((0, 0), (w - 1, h - 1)),
+        radius=element.corner_radius,
+        fill=bg_rgba,
+    )
+
+    text_origin = (element.padding - bbox[0], element.padding - bbox[1])
+
+    # 2. Soft glow — blurred copy of an extra-thick outlined glyph stroke.
+    if element.outline_width > 0:
+        glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow)
+        glow_stroke = max(2, int(element.outline_width * 1.6))
+        glow_draw.text(
+            text_origin,
+            visible,
+            font=font,
+            fill=element.outline_color,
+            stroke_width=glow_stroke,
+            stroke_fill=element.outline_color,
+        )
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=element.outline_width))
+        # Drop opacity to ~50% so it reads as halo, not a second outline.
+        a = glow.split()[3].point(lambda v: int(v * 0.55))
+        glow.putalpha(a)
+        img = Image.alpha_composite(img, glow)
+        draw = ImageDraw.Draw(img)
+
+    # 3. Crisp outlined text on top.
+    draw.text(
+        text_origin,
+        visible,
+        font=font,
+        fill=element.text_color,
+        stroke_width=element.outline_width,
+        stroke_fill=element.outline_color,
+    )
+
+    if state.alpha < 1.0:
+        a = img.split()[3].point(lambda v: int(v * state.alpha))
+        img.putalpha(a)
+    if state.scale != 1.0:
+        new_w = max(1, int(round(w * state.scale)))
+        new_h = max(1, int(round(h * state.scale)))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+    return img
+
+
+def resolve_subtitle_banner_anchor(
+    element: SubtitleBannerElement,
+    fonts_dir: Path,
+    canvas_size: tuple[int, int],
+) -> tuple[int, int]:
+    """Compute top-left placement on the canvas for the rendered banner."""
+    canvas_w, canvas_h = canvas_size
+    w, h = measure_subtitle_banner(element, fonts_dir)
+    x = max(element.margin, (canvas_w - w) // 2)
+    if element.position == "top_banner":
+        y = element.margin
+    elif element.position == "bottom_banner":
+        y = max(element.margin, canvas_h - h - element.margin)
+    else:  # center
+        y = max(element.margin, (canvas_h - h) // 2)
+    return x, y

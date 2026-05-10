@@ -1,0 +1,52 @@
+{
+  "_comment": "Style presets consumed by render/build_decision. `subtitle_default` chooses between 'banner' (one rounded-rect chip per line, baseline3 vibe) and 'hero' (one giant chalk glyph per song, v6-default vibe). Override at the CLI with --subtitle-style.",
+  "default": "pink_handdrawn",
+  "presets": {
+    "pink_handdrawn": {
+      "subtitle_default": "hero",
+      "text": {
+        "color": "#FF6B9D",
+        "color_strong": "#E63946",
+        "outline_color": "#264653",
+        "outline_width": 5,
+        "halo_color": "#FFFFFF",
+        "halo_width": 4
+      },
+      "subtitle_banner": {
+        "text_color": "#FFFFFF",
+        "outline_color": "#E63946",
+        "outline_width": 4,
+        "bg_color": "#FF6B9D",
+        "bg_alpha": 180,
+        "corner_radius": 16,
+        "padding": 18,
+        "font": "KleeOne-SemiBold"
+      },
+      "decoration_color_palette": ["#FF6B9D", "#E63946", "#FFFFFF"],
+      "ambient_tags": ["sparkle", "heart"]
+    },
+    "green_neon": {
+      "subtitle_default": "banner",
+      "text": {
+        "color": "#FFFFFF",
+        "color_strong": "#FFFFFF",
+        "outline_color": "#A0E847",
+        "outline_width": 6,
+        "halo_color": "#A0E847",
+        "halo_width": 4
+      },
+      "subtitle_banner": {
+        "text_color": "#FFFFFF",
+        "outline_color": "#A0E847",
+        "outline_width": 6,
+        "bg_color": "#A0E847",
+        "bg_alpha": 100,
+        "corner_radius": 18,
+        "padding": 18,
+        "font": "KleeOne-SemiBold"
+      },
+      "decoration_color_palette": ["#FF6B9D", "#A0E847", "#FFFFFF"],
+      "ambient_tags": ["sparkle", "star"]
+    }
+  }
+}

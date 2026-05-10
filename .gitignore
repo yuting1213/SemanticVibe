@@ -27,10 +27,19 @@ outputs/
 samples/*.mp4
 samples/*.mov
 
-# SDXL / Z-Image-generated stickers (rebuild via scripts/generate_stickers.py)
-assets/
+# SDXL / Z-Image-generated stickers (rebuild via scripts/generate_stickers.py).
+# `assets/*` (not `assets/`) so the !-negations below can re-include
+# specific config files inside the directory.
+assets/*
+!assets/tag_vocabulary.json
+!assets/styles.json
 loras/
 failed.log
+
+# Asset upload zips (250MB+ each, regenerated from source)
+assets-*.zip
+.tofu_filelist.txt
+.cache/
 
 # Models / caches
 models/
