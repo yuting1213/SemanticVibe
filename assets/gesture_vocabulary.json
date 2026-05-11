@@ -1,0 +1,17 @@
+{
+  "_comment": "v13 closed gesture vocabulary. The VLM (qwen2.5vl:7b) must emit exactly one of these `id` values per frame. `tag` maps to a member of assets/tag_vocabulary.json that drives the decoration sticker; `tag: null` means the gesture is recognised but no decoration should fire (static poses / no-action). `animation` overrides the entry-animation pool; null falls through to the strength/motion-bucket fallback in _pick_entry.",
+  "fallback_gesture": "none",
+  "gestures": [
+    {"id": "heart_hands",     "tag": "heart",     "animation": "scale_pop"},
+    {"id": "arms_raised",     "tag": "sparkle",   "animation": "drop_in"},
+    {"id": "jump",            "tag": "burst",     "animation": "stamp"},
+    {"id": "peace_sign",      "tag": "sparkle",   "animation": "spin_in"},
+    {"id": "point_at_camera", "tag": "arrow",     "animation": "slide_in_left"},
+    {"id": "spin",            "tag": "sparkle",   "animation": "spin_in"},
+    {"id": "clap",            "tag": "exclaim",   "animation": "stamp"},
+    {"id": "smile_close_up",  "tag": "heart",     "animation": "scale_pop"},
+    {"id": "pose_static",     "tag": null,        "animation": null},
+    {"id": "lean_or_sway",    "tag": null,        "animation": null},
+    {"id": "none",            "tag": null,        "animation": null}
+  ]
+}

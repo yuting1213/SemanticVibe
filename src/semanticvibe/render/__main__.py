@@ -108,6 +108,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--no-motion-aware", dest="motion_aware",
                    action="store_false",
                    help="Disable v12 motion-aware animation override.")
+    p.add_argument("--vlm-gestures", dest="vlm_gestures",
+                   action="store_true", default=True,
+                   help="v13: run a local VLM (qwen2.5vl:7b via Ollama) on "
+                   "each motion-peak frame and anchor a decoration at the "
+                   "peak time using the gesture-implied tag (heart_hands → "
+                   "heart, arms_raised → sparkle, etc.). Adds ~2.5 min per "
+                   "first render; cached at .cache/vlm_gestures/. "
+                   "Default ON.")
+    p.add_argument("--no-vlm-gestures", dest="vlm_gestures",
+                   action="store_false",
+                   help="Disable v13 VLM gesture anchoring.")
+    p.add_argument("--vlm-model", default="qwen2.5vl:7b",
+                   help="Ollama VLM model tag for v13 gesture detection.")
     p.add_argument("--renderer", choices=["moviepy", "hyperframes"],
                    default="hyperframes",
                    help="Frame compositor backend. 'hyperframes' (default, "
@@ -335,8 +348,10 @@ def main(argv: list[str] | None = None) -> int:
         style=args.style, subtitle_style=args.subtitle_style,
         audio_path=beat_audio if args.beat_sync else None,
         beat_sync=args.beat_sync,
-        video_path=args.video if args.motion_aware else None,
+        video_path=args.video if (args.motion_aware or args.vlm_gestures) else None,
         motion_aware=args.motion_aware,
+        vlm_gestures=args.vlm_gestures,
+        vlm_model=args.vlm_model,
     )
     log.info(
         "Decision: %d elements (%d text, %d outlined, %d banner, %d decoration, %d hero)",

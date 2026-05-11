@@ -59,6 +59,7 @@ from semanticvibe.motion_detector import (
     detect_motion_peaks,
     motion_intensity_at,
 )
+from semanticvibe.vlm_gesture import GestureEvent, detect_gestures
 from semanticvibe.lyrics import LyricLine
 from semanticvibe.semantic_align import Highlight, align_lyrics
 from semanticvibe.style import default_style_name, get_style
@@ -317,6 +318,8 @@ def build_decision(
     beat_sync: bool = True,
     video_path: Path | str | None = None,
     motion_aware: bool = True,
+    vlm_gestures: bool = True,
+    vlm_model: str = "qwen2.5vl:7b",
 ) -> Decision:
     """Assemble a `Decision` from a list of `Highlight`s + per-time pose masks.
 
@@ -386,6 +389,31 @@ def build_decision(
         except Exception as exc:  # noqa: BLE001
             log.warning("motion detection failed (%s); continuing without it", exc)
             motion_info = None
+
+    # ---- v13: VLM gesture anchoring (one per motion peak) ----------------
+    # Gesture events become first-class decorations placed at the peak time
+    # with the gesture-implied tag + animation. Lyric-driven decorations
+    # whose tag matches a gesture event within ±0.5s are deduped later.
+    gesture_events: list[GestureEvent] = []
+    if vlm_gestures and video_path and motion_info:
+        try:
+            gi = detect_gestures(
+                str(video_path),
+                motion_info["peak_times"],
+                model=vlm_model,
+            )
+            gesture_events = gi["events"]
+            log.info(
+                "[vlm_gesture] %d gesture events from %d peaks (cache=%s)",
+                len(gesture_events),
+                len(motion_info["peak_times"]),
+                gi["cache_hit"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "VLM gesture detection failed (%s); continuing without it", exc,
+            )
+            gesture_events = []
 
     # ---- Tag expansion: pad under-tagged highlights with ambient tags. ----
     # Avoids "everything is sparkle" by guaranteeing ≥2 tags per highlight
@@ -682,6 +710,46 @@ def build_decision(
         layout_stats["placed"], layout_stats["shrunk"], layout_stats["skipped"],
     )
 
+    # ---- v13: emit a first-class decoration at each gesture event -------
+    # These decorations are anchored to the dancer's actual gesture time,
+    # not the lyric time — that's the whole point of v13.
+    if gesture_events:
+        gesture_size = max(64, int(canvas_size[0] * 0.18))
+        for ev in gesture_events:
+            if ev.tag is None:
+                continue
+            elements.append(DecorationElement(
+                asset_tag=ev.tag,
+                start_time=ev.time,
+                end_time=ev.time + 2.0,
+                base_size=gesture_size,
+                rotation_jitter=10.0,
+                animation=ev.animation or "scale_pop",
+                idle_animation="pulse",
+                color_tint=[],
+                reasoning=f"v13 gesture={ev.gesture!r} at motion peak {ev.time:.2f}s",
+            ))
+
+        # Dedup: if a lyric-driven decoration uses the same tag within
+        # 0.5s of a gesture event, the gesture wins (better timing).
+        to_drop: set[int] = set()
+        for ev in gesture_events:
+            if ev.tag is None:
+                continue
+            for i, el in enumerate(elements):
+                if not isinstance(el, DecorationElement):
+                    continue
+                if (el.reasoning or "").startswith("v13 gesture="):
+                    continue  # never dedup gesture-spawned ones against each other
+                if el.asset_tag == ev.tag and abs(el.start_time - ev.time) < 0.5:
+                    to_drop.add(i)
+        if to_drop:
+            elements = [el for i, el in enumerate(elements) if i not in to_drop]
+            log.info(
+                "[vlm_gesture] deduped %d lyric-driven decorations "
+                "(gesture took precedence)", len(to_drop),
+            )
+
     # ------- global style -------
     vibe_extras = ""
     if beat_info:
@@ -691,6 +759,8 @@ def build_decision(
         )
     if motion_info:
         vibe_extras += f" + motion_sync ({len(motion_info['peak_times'])} peaks)"
+    if gesture_events:
+        vibe_extras += f" + vlm_gesture ({len(gesture_events)} events)"
     return Decision(
         elements=elements,
         global_style=GlobalStyle(

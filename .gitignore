@@ -33,6 +33,7 @@ samples/*.mov
 assets/*
 !assets/tag_vocabulary.json
 !assets/styles.json
+!assets/gesture_vocabulary.json
 loras/
 failed.log
 

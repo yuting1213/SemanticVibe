@@ -110,6 +110,158 @@ If `[layout/v10]` reports many `shrunk` or `skipped`:
 
 ---
 
+# v13 — VLM-driven gesture anchoring (dancer's WHAT, not just WHEN)
+
+## What changed since v12
+
+v12 motion_detector tells the renderer **when** the dancer moves (28
+peaks on demo.mp4) but not **what** she's doing. Every decoration was
+still aligned to lyric time, just with different entry animations — the
+visual still felt detached from the dance.
+
+v13 sends each motion-peak frame to a local VLM (qwen2.5vl:7b via
+Ollama), parses the gesture label against a closed vocabulary, and
+emits a NEW first-class decoration at that peak time using the gesture's
+mapped tag + animation. Decorations are anchored to **what the dancer
+is actually doing**, not just where the music lands.
+
+Smoke test (5 frames at known peaks):
+
+| VLM | Clean hits | Effective |
+|---|---|---|
+| gemma3:4b | 1/5 (20%) | ~30% |
+| **qwen2.5vl:7b** | **3/5 (60%)** | **~70%** |
+
+### New: `src/semanticvibe/vlm_gesture.py`
+
+| API | Purpose |
+|---|---|
+| `GestureEvent` Pydantic | `time, gesture, tag, animation, confidence` |
+| `GestureInfo` TypedDict | `events, model, cache_hit` |
+| `detect_gestures(video, peak_times, *, model, host, use_cache)` | Per-peak VLM call, parses to closed vocab, dedups invalid/non-actionable labels |
+
+Internals (~210 LOC):
+- Loads `assets/gesture_vocabulary.json` once → 11 closed gesture IDs
+- Vocab fingerprint (md5[:8]) baked into cache key so vocab edits bust the cache
+- Per-peak frame extraction via `cv2.VideoCapture` (same pattern as motion_detector)
+- 512px-wide JPEG resize keeps VLM token budget under control
+- POST `/api/generate` with `images: [b64]` + closed-vocab prompt (single-turn vision is simpler than `/api/chat` messages array)
+- Closed-vocab parser drops labels outside the set (silent miss > wrong placement)
+- Disk cache at `.cache/vlm_gestures/<sha1[:16]>.json`, key = `path + mtime + model + peak_times + vocab_fp`
+- Error handling mirrors `_ollama_align` — URLError → "Ollama unreachable", TimeoutError → drop event
+
+### New: `assets/gesture_vocabulary.json`
+
+11 closed gesture IDs mapped to existing v6 tag vocab:
+
+| Gesture | Tag | Animation |
+|---|---|---|
+| heart_hands | heart | scale_pop |
+| arms_raised | sparkle | drop_in |
+| jump | burst | stamp |
+| peace_sign | sparkle | spin_in |
+| point_at_camera | arrow | slide_in_left |
+| spin | sparkle | spin_in |
+| clap | exclaim | stamp |
+| smile_close_up | heart | scale_pop |
+| pose_static, lean_or_sway, none | null (no decoration) | — |
+
+Load-time defensive check verifies every non-null tag exists in
+`tag_vocabulary.json` so a typo in the gesture vocab fails fast instead
+of silently producing garbage decorations.
+
+### Patched `build_elements.py`
+
+`build_decision` gained `vlm_gestures: bool = True` and `vlm_model: str
+= "qwen2.5vl:7b"` parameters mirroring the v12 audio_path / motion_aware
+pattern. After motion detection, calls `detect_gestures(...)` and:
+
+1. **Emits gesture decorations** at peak time:
+   ```python
+   DecorationElement(
+       asset_tag=ev.tag, start_time=ev.time, end_time=ev.time + 2.0,
+       base_size=int(canvas_w * 0.18),
+       animation=ev.animation or "scale_pop",
+       reasoning=f"v13 gesture={ev.gesture!r} at motion peak {ev.time:.2f}s",
+   )
+   ```
+
+2. **Dedup pass**: any lyric-driven decoration whose `asset_tag` matches
+   a gesture event within ±0.5s is dropped. Gesture wins on timing.
+   Logs `[vlm_gesture] deduped N lyric-driven decorations`.
+
+### CLI
+
+```
+--vlm-gestures           # default ON
+--no-vlm-gestures        # ablation toggle
+--vlm-model qwen2.5vl:7b
+```
+
+### Verified on `demo.mp4`
+
+First render (cold cache):
+
+```
+[motion_sync] demo.mp4: 28 peaks (10 high, 13 medium, 5 low) @ 15.0 fps
+[vlm_gesture] 27/28 peaks → 27 valid events
+              (unknown=0, non-actionable=1, model=qwen2.5vl:7b, cache=False)
+[vlm_gesture] 27 gesture events from 28 peaks (cache=False)
+[vlm_gesture] deduped 5 lyric-driven decorations
+              (gesture took precedence)
+Decision: 53 elements (0 text, 10 outlined, 0 banner, 43 decoration, 0 hero)
+```
+
+Gesture distribution on demo.mp4:
+
+| Gesture | Count |
+|---|---|
+| arms_raised | 12 |
+| peace_sign | 6 |
+| point_at_camera | 4 |
+| smile_close_up | 2 |
+| spin | 2 |
+| heart_hands | 1 |
+
+Second render (cache hit):
+
+```
+[vlm_gesture] cache hit 35b26a088cce8a7c: 27 events from 28 peaks
+real: 1m43s   (vs ~4 min on cold render — VLM pass skipped entirely)
+```
+
+### Comparison vs v12
+
+| Metric | v12 | v13 |
+|---|---|---|
+| Decoration count | 21 (lyric-driven) | **43** (lyric-driven + 22 gesture-anchored after dedup) |
+| Decoration timing | aligned to lyric times | **aligned to motion peaks** (when dancer actually does the gesture) |
+| Animation pool diversity | strength/motion buckets | **gesture-specific** (heart_hands always scale_pop, jump always stamp) |
+| VLM zero-shot quality | n/a | 27/28 in-vocab (96% valid rate, 0 unknown labels) |
+| Render cost | ~95s for 32s output | **~3-4 min cold, 1m43s cached** |
+
+### Design decisions (locked)
+
+| Question | Answer |
+|---|---|
+| Default flag | `--vlm-gestures` ON by default. Cache makes re-renders fast. |
+| Dedup policy | Replace when same tag within ±0.5s. Keeps gesture timing, drops lyric duplicate. |
+| Cache | Disk cache at `.cache/vlm_gestures/<key>.json`. Key includes `path + mtime + model + peak_times + vocab_fp`. |
+| Endpoint | `/api/generate` (single-turn vision, simpler than `/api/chat`). |
+| Model | `qwen2.5vl:7b`. `--vlm-model` flag exposes the choice. |
+| Pose-relative anchor | Deferred to v14. v13 uses ForbiddenMap default placement; hand-anchored placement needs landmarks at the gesture frame. |
+
+### Tests still 150 / 150
+
+### Known limits
+
+1. **~30% recall miss**: qwen2.5vl gets some frames wrong (framing-face → `heart_hands` is a sympathetic miss; some `point_at_camera` calls on raised-arm frames are real misses). The closed-vocab parser drops invalid labels — silent miss rather than wrong placement, so the visual stays clean.
+2. **Idol-specific gestures**: 11 gesture IDs covers the common cases (heart-hands, V, arms-up, jump, clap, point) but misses niche moves (chest-pump, hair-flip, k-pop point-and-shoot). Expand `gesture_vocabulary.json` as new content reveals gaps.
+3. **One frame per peak**: jumps and spins span 200-400 ms; sampling the single peak frame catches mid-motion. v14 could sample 2-3 frames around each peak and majority-vote.
+4. **GPU memory contention**: Ollama swaps gemma3:4b ↔ qwen2.5vl:7b weights between the lyric-align step and the gesture step. On 12 GB VRAM this is fine but adds ~5s switching overhead. Pre-warm both models via `ollama run gemma3:4b ""; ollama run qwen2.5vl:7b ""` if iteration speed matters.
+
+---
+
 # v12 — motion-aware animation trigger (dancer body motion → entry pool)
 
 ## What changed since v11
