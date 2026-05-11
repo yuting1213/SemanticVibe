@@ -59,7 +59,11 @@ from semanticvibe.motion_detector import (
     detect_motion_peaks,
     motion_intensity_at,
 )
-from semanticvibe.vlm_gesture import GestureEvent, detect_gestures
+from semanticvibe.vlm_gesture import (
+    GestureEvent,
+    detect_gestures,
+    gesture_anchor_symbol,
+)
 from semanticvibe.lyrics import LyricLine
 from semanticvibe.semantic_align import Highlight, align_lyrics
 from semanticvibe.style import default_style_name, get_style
@@ -286,6 +290,167 @@ def _corner_zones(canvas_size: tuple[int, int]) -> list[tuple[int, int, int, int
     ]
 
 
+# ---------------------------------------------------------------------------
+# v14: MediaPipe-landmark-anchored placement
+# ---------------------------------------------------------------------------
+#
+# MediaPipe Pose landmark indices (we keep 0-22, upper body):
+#   0..10  face block (nose, eyes, ears, mouth)
+#   11, 12 shoulders (L, R)        — note: MediaPipe's "right" is the
+#                                     subject's right, so the viewer's left
+#   13, 14 elbows (L, R)
+#   15, 16 wrists (L, R)
+#   17, 18 pinkies (L, R)
+#   19, 20 indexes (L, R)
+#   21, 22 thumbs (L, R)
+# In a selfie / mirrored shot, MediaPipe's "right_*" maps to the viewer's
+# LEFT side of the frame. We use MediaPipe's right (index 20) for the
+# canonical "fingertip pointing the gesture" so downstream renderings
+# are consistent regardless of camera orientation.
+
+_LM_NOSE = 0
+_LM_RIGHT_EYE = 2
+_LM_LEFT_SHOULDER = 11
+_LM_RIGHT_SHOULDER = 12
+_LM_LEFT_WRIST = 15
+_LM_RIGHT_WRIST = 16
+_LM_LEFT_INDEX = 19
+_LM_RIGHT_INDEX = 20
+
+_VISIBILITY_OK = 0.0  # Tasks API landmarks lack `visibility` once unpacked
+                       # to a plain (x, y) array — keep all and rely on
+                       # MediaPipe's own confidence gating upstream.
+
+
+def _landmark_to_pixel(
+    landmarks: list[list[float]] | None,
+    idx: int,
+    canvas_size: tuple[int, int],
+) -> tuple[int, int] | None:
+    """Convert a single normalised landmark to canvas pixel coords."""
+    if landmarks is None or idx >= len(landmarks):
+        return None
+    x, y = landmarks[idx]
+    cw, ch = canvas_size
+    return int(x * cw), int(y * ch)
+
+
+def _resolve_anchor_landmark(
+    symbol: str | None,
+    landmarks: list[list[float]] | None,
+    canvas_size: tuple[int, int],
+    *,
+    decoration_size: int,
+) -> tuple[int, int] | None:
+    """Map a vocab anchor symbol (e.g. 'mid_wrists_above') to a top-left
+    pixel anchor that puts the decoration centre at the symbol point."""
+    if symbol is None or landmarks is None:
+        return None
+    cw, ch = canvas_size
+    half = decoration_size // 2
+
+    def _at(idx: int, dx: int = 0, dy: int = 0) -> tuple[int, int] | None:
+        p = _landmark_to_pixel(landmarks, idx, canvas_size)
+        if p is None:
+            return None
+        return p[0] + dx, p[1] + dy
+
+    def _mid(a: int, b: int, dx: int = 0, dy: int = 0) -> tuple[int, int] | None:
+        pa = _landmark_to_pixel(landmarks, a, canvas_size)
+        pb = _landmark_to_pixel(landmarks, b, canvas_size)
+        if pa is None or pb is None:
+            return None
+        return (pa[0] + pb[0]) // 2 + dx, (pa[1] + pb[1]) // 2 + dy
+
+    centre: tuple[int, int] | None = None
+    if symbol == "right_index":
+        centre = _at(_LM_RIGHT_INDEX, dx=30, dy=-20)
+    elif symbol == "left_index":
+        centre = _at(_LM_LEFT_INDEX, dx=-30, dy=-20)
+    elif symbol == "right_wrist":
+        centre = _at(_LM_RIGHT_WRIST, dx=20, dy=-10)
+    elif symbol == "left_wrist":
+        centre = _at(_LM_LEFT_WRIST, dx=-20, dy=-10)
+    elif symbol == "mid_wrists":
+        centre = _mid(_LM_LEFT_WRIST, _LM_RIGHT_WRIST)
+    elif symbol == "mid_wrists_above":
+        centre = _mid(_LM_LEFT_WRIST, _LM_RIGHT_WRIST, dy=-60)
+    elif symbol == "mid_shoulders":
+        centre = _mid(_LM_LEFT_SHOULDER, _LM_RIGHT_SHOULDER)
+    elif symbol == "mid_shoulders_below":
+        centre = _mid(_LM_LEFT_SHOULDER, _LM_RIGHT_SHOULDER, dy=80)
+    elif symbol == "right_eye_offset":
+        # Beside the face (subject's right side = viewer's left).
+        centre = _at(_LM_RIGHT_EYE, dx=-90, dy=-10)
+
+    if centre is None:
+        return None
+    # Convert centre-point to top-left anchor; clamp inside canvas.
+    x = max(8, min(cw - decoration_size - 8, centre[0] - half))
+    y = max(8, min(ch - decoration_size - 8, centre[1] - half))
+    return x, y
+
+
+def _face_bbox(
+    landmarks: list[list[float]] | None,
+    canvas_size: tuple[int, int],
+    *,
+    padding: int = 20,
+) -> tuple[int, int, int, int] | None:
+    """Compute pixel-space (x1, y1, x2, y2) face bbox from landmarks 0-10.
+
+    Returns None when face landmarks are missing or degenerate.
+    """
+    if landmarks is None or len(landmarks) < 11:
+        return None
+    cw, ch = canvas_size
+    xs = [p[0] for p in landmarks[:11]]
+    ys = [p[1] for p in landmarks[:11]]
+    if not xs or not ys:
+        return None
+    x1 = max(0, int(min(xs) * cw) - padding)
+    y1 = max(0, int(min(ys) * ch) - padding)
+    x2 = min(cw, int(max(xs) * cw) + padding)
+    y2 = min(ch, int(max(ys) * ch) + padding)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _push_anchor_out_of_bbox(
+    anchor: tuple[int, int],
+    bbox: tuple[int, int, int, int],
+    size: int,
+    canvas_size: tuple[int, int],
+) -> tuple[int, int]:
+    """If the `size × size` square at `anchor` overlaps `bbox`, slide
+    along the shortest axis until they clear. Returns possibly-shifted
+    anchor (always inside canvas)."""
+    ax, ay = anchor
+    bx1, by1, bx2, by2 = bbox
+    cw, ch = canvas_size
+    # Decoration square sides.
+    ax2, ay2 = ax + size, ay + size
+    # Quick reject — no overlap.
+    if ax2 <= bx1 or ax >= bx2 or ay2 <= by1 or ay >= by2:
+        return anchor
+    # Distances to push along each cardinal axis.
+    dx_left = (ax + size) - bx1  # push left = decrease x by this much
+    dx_right = bx2 - ax           # push right = increase x by this much
+    dy_up = (ay + size) - by1     # push up = decrease y
+    dy_down = by2 - ay            # push down = increase y
+    best = min(dx_left, dx_right, dy_up, dy_down)
+    if best == dx_left:
+        ax = max(8, ax - dx_left - 4)
+    elif best == dx_right:
+        ax = min(cw - size - 8, ax + dx_right + 4)
+    elif best == dy_up:
+        ay = max(8, ay - dy_up - 4)
+    else:
+        ay = min(ch - size - 8, ay + dy_down + 4)
+    return ax, ay
+
+
 def _scaled_person_masks(
     person_masks: dict[float, np.ndarray] | None,
     canvas_size: tuple[int, int],
@@ -401,6 +566,7 @@ def build_decision(
                 str(video_path),
                 motion_info["peak_times"],
                 model=vlm_model,
+                landmarks_by_time=motion_info.get("peak_landmarks"),
             )
             gesture_events = gi["events"]
             log.info(
@@ -714,10 +880,15 @@ def build_decision(
     # These decorations are anchored to the dancer's actual gesture time,
     # not the lyric time — that's the whole point of v13.
     #
-    # v13.1: when the VLM reported a `best_empty_zone`, we honour it and
-    # compute a pixel_anchor inside that zone (rng-jittered for variety).
-    # Otherwise we leave pixel_anchor=None and the renderer falls back to
-    # ForbiddenMap geometric placement.
+    # v14 placement strategy (in priority order):
+    #   1) landmark-anchored via gesture_vocabulary.anchor_landmark
+    #      (e.g. peace_sign → right_index → decoration NEXT TO the
+    #      fingertip making the V-sign)
+    #   2) VLM-reported best_empty_zone keyword (v13.1 fallback)
+    #   3) None → renderer's ForbiddenMap geometric pass
+    # ALL paths then go through face-safety push-out: if the chosen
+    # anchor overlaps the face bbox (landmarks 0-10 + 20px padding),
+    # slide along the shortest axis until clear.
     if gesture_events:
         gesture_size = max(64, int(canvas_size[0] * 0.18))
         cw, ch = canvas_size
@@ -730,15 +901,40 @@ def build_decision(
         for ev in gesture_events:
             if ev.tag is None:
                 continue
-            pixel_anchor = None
-            if ev.zone and ev.zone in zone_to_box:
+            pixel_anchor: tuple[int, int] | None = None
+            placement_source = "zone"
+
+            # 1) Try landmark-anchored placement (v14)
+            if ev.landmarks_normalised is not None:
+                symbol = gesture_anchor_symbol(ev.gesture)
+                anchor_from_landmark = _resolve_anchor_landmark(
+                    symbol, ev.landmarks_normalised, canvas_size,
+                    decoration_size=gesture_size,
+                )
+                if anchor_from_landmark is not None:
+                    pixel_anchor = anchor_from_landmark
+                    placement_source = f"landmark:{symbol}"
+
+            # 2) Fall back to VLM zone keyword
+            if pixel_anchor is None and ev.zone and ev.zone in zone_to_box:
                 x1, y1, x2, y2 = zone_to_box[ev.zone]
-                # Centre-of-zone minus half-size, clamped to canvas.
-                cx = (x1 + x2) // 2
-                cy = (y1 + y2) // 2
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                 ax = max(8, min(cw - gesture_size - 8, cx - gesture_size // 2))
                 ay = max(8, min(ch - gesture_size - 8, cy - gesture_size // 2))
                 pixel_anchor = (ax, ay)
+                placement_source = f"zone:{ev.zone}"
+
+            # 3) Face safety: never overlap the face bbox.
+            if pixel_anchor is not None and ev.landmarks_normalised is not None:
+                face = _face_bbox(ev.landmarks_normalised, canvas_size, padding=20)
+                if face is not None:
+                    before = pixel_anchor
+                    pixel_anchor = _push_anchor_out_of_bbox(
+                        pixel_anchor, face, gesture_size, canvas_size,
+                    )
+                    if pixel_anchor != before:
+                        placement_source += "+face_pushed"
+
             elements.append(DecorationElement(
                 asset_tag=ev.tag,
                 start_time=ev.time,
@@ -750,8 +946,8 @@ def build_decision(
                 color_tint=[],
                 pixel_anchor=pixel_anchor,
                 reasoning=(
-                    f"v13 gesture={ev.gesture!r} (conf={ev.confidence:.2f}, "
-                    f"zone={ev.zone or 'auto'}) at peak {ev.time:.2f}s"
+                    f"v14 gesture={ev.gesture!r} conf={ev.confidence:.2f} "
+                    f"placement={placement_source} at peak {ev.time:.2f}s"
                     + (f" — action: {ev.action!r}" if ev.action else "")
                 ),
             ))
@@ -765,8 +961,9 @@ def build_decision(
             for i, el in enumerate(elements):
                 if not isinstance(el, DecorationElement):
                     continue
-                if (el.reasoning or "").startswith("v13 gesture="):
-                    continue  # never dedup gesture-spawned ones against each other
+                # never dedup gesture-spawned ones against each other (v13/v14).
+                if (el.reasoning or "").startswith(("v13 gesture=", "v14 gesture=")):
+                    continue
                 if el.asset_tag == ev.tag and abs(el.start_time - ev.time) < 0.5:
                     to_drop.add(i)
         if to_drop:

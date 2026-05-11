@@ -71,6 +71,11 @@ class MotionInfo(TypedDict):
     peak_intensities: dict[float, Intensity]
     energy_envelope: list[tuple[float, float]]  # (time_sec, z_score)
     sample_fps: float
+    # v14: per-peak landmarks for downstream hand/face-anchored placement.
+    # Each entry is a (N_LANDMARKS, 2) ndarray of normalised (x, y) in [0, 1]
+    # for landmarks 0-22 (upper body — same set used for velocity). None
+    # when no subject was detected at that peak time.
+    peak_landmarks: dict[float, np.ndarray | None]
 
 
 def _empty_info(sample_fps: float) -> MotionInfo:
@@ -79,6 +84,7 @@ def _empty_info(sample_fps: float) -> MotionInfo:
         peak_intensities={},
         energy_envelope=[],
         sample_fps=sample_fps,
+        peak_landmarks={},
     )
 
 
@@ -203,13 +209,20 @@ def detect_motion_peaks(
 
     peak_times: list[float] = []
     peak_intensities: dict[float, Intensity] = {}
+    peak_landmarks: dict[float, np.ndarray | None] = {}
     for pi in peak_idxs:
-        t = float(sampled_times[int(pi)])
-        bucket = _bucket(float(z[int(pi)]))
+        i = int(pi)
+        t = float(sampled_times[i])
+        bucket = _bucket(float(z[i]))
         if bucket is None:
             continue
         peak_times.append(t)
         peak_intensities[t] = bucket
+        # v14: retain the same landmark snapshot we already extracted in
+        # the velocity loop. May be None when no subject was detected
+        # at that frame; downstream consumers fall back to zone-based
+        # placement in that case.
+        peak_landmarks[t] = sampled_coords[i]
 
     energy_envelope = [
         (float(sampled_times[i]), float(z[i])) for i in range(len(z))
@@ -226,6 +239,7 @@ def detect_motion_peaks(
         peak_intensities=peak_intensities,
         energy_envelope=energy_envelope,
         sample_fps=sample_fps,
+        peak_landmarks=peak_landmarks,
     )
 
 

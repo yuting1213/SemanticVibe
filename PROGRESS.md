@@ -110,6 +110,153 @@ If `[layout/v10]` reports many `shrunk` or `skipped`:
 
 ---
 
+# v14 — Body-Landmark-Anchored Gesture Decorations + Face Safety
+
+## What changed since v13.1
+
+v13.1's zone-based placement (`top_right` etc.) was **subject-blind** —
+the VLM picked a coarse corner keyword without knowing where the face
+or hands actually were within that corner. On 20260505 the singer's
+face filled the top-right at t≈0.7s, so the gesture star landed on her
+face. And every gesture decoration in the song stacked in the same
+corner because VLM said `top_right` for all 14 peaks.
+
+v14 plugs in the MediaPipe pose landmarks v12 already extracts (but
+threw away). Two new behaviours:
+
+1. **Landmark-anchored placement**: each gesture in
+   `gesture_vocabulary.json` declares an `anchor_landmark` symbol
+   (e.g. `peace_sign` → `right_index`, `heart_hands` → `mid_wrists`,
+   `arms_raised` → `mid_wrists_above`). The renderer reads the
+   landmark position at the gesture's peak frame, converts normalised
+   coords to canvas pixels, applies the symbol's offset, and places
+   the decoration THERE — visibly attached to the body part doing the
+   gesture.
+
+2. **Face-safety push-out**: face bbox is computed from landmarks 0-10
+   (+ 20 px padding). Any gesture decoration whose anchor would overlap
+   the face is slid along the shortest axis until clear. Decoration
+   NEVER intersects the face.
+
+### Files changed
+
+| File | What |
+|---|---|
+| `src/semanticvibe/motion_detector.py` | `MotionInfo` gained `peak_landmarks: dict[float, np.ndarray \| None]`. The existing velocity-extraction loop already builds these arrays; v14 just stops dropping them. |
+| `assets/gesture_vocabulary.json` | Each gesture entry gained an `anchor_landmark` field (symbol name only — pixel math lives in build_elements). |
+| `src/semanticvibe/vlm_gesture.py` | `GestureEvent.landmarks_normalised: list[list[float]] \| None`. `detect_gestures(...)` gained `landmarks_by_time` kwarg that populates the new field per event. New `gesture_anchor_symbol()` helper for downstream lookup. Cache backward-compat: old v13.1 entries (no landmarks) load fine and fall through to zone placement. |
+| `src/semanticvibe/build_elements.py` | New helpers `_landmark_to_pixel`, `_resolve_anchor_landmark`, `_face_bbox`, `_push_anchor_out_of_bbox`. The gesture-decoration emission loop now tries (1) landmark anchor → (2) VLM zone keyword → (3) None (ForbiddenMap fallback), with face-safety push-out always running after step 1 or 2. The dedup pass also accepts `"v14 gesture="` prefix. |
+
+### Symbol → landmark mapping
+
+| Symbol | MediaPipe landmark(s) | Offset |
+|---|---|---|
+| `right_index` | 20 | +30 px x, −20 px y |
+| `left_index` | 19 | −30 px x, −20 px y |
+| `right_wrist` | 16 | +20 px x, −10 px y |
+| `left_wrist` | 15 | −20 px x, −10 px y |
+| `mid_wrists` | midpoint(15, 16) | — |
+| `mid_wrists_above` | midpoint(15, 16) | −60 px y |
+| `mid_shoulders` | midpoint(11, 12) | — |
+| `mid_shoulders_below` | midpoint(11, 12) | +80 px y |
+| `right_eye_offset` | 2 | −90 px x, −10 px y |
+
+### Verified on 20260505
+
+Console:
+```
+[motion_sync] 15 peaks (9 high, 2 medium, 4 low) @ 15.0 fps
+[vlm_gesture] 14/15 peaks → 14 valid events
+              (unknown=0, low_conf=1, non-actionable=0, model=qwen2.5vl:7b, cache=False)
+Decision: 30 elements (0 text, 5 outlined, 0 banner, 25 decoration, 0 hero)
+```
+
+Placement reasoning per gesture (all 14 used the new landmark path):
+
+| t (s) | pixel_anchor | placement |
+|---|---|---|
+| 0.73 | (78, 470) | landmark:right_index |
+| 2.00 | (131, 243) | landmark:right_index |
+| 3.47 | (89, 386) | landmark:right_index |
+| **4.80** | (58, 8) | landmark:right_index **+ face_pushed** |
+| 5.34 | (111, 324) | landmark:right_index |
+| 5.67 | (115, 326) | landmark:right_index |
+| 6.07 | (106, 501) | landmark:right_index |
+| **7.00** | (84, 165) | landmark:right_index **+ face_pushed** |
+| 7.47 | (8, 173) | landmark:right_index |
+| 8.94 | (8, 444) | landmark:right_index |
+| **9.74** | (112, 196) | landmark:right_index **+ face_pushed** |
+| **11.94** | (122, 180) | landmark:right_index **+ face_pushed** |
+| 15.07 | (213, 418) | landmark:right_index |
+| 15.67 | (148, 215) | landmark:right_index |
+
+**14 distinct pixel anchors** (was 14× top_right in v13.1). **4 of 14
+events face-pushed** automatically when the natural landmark anchor
+would have overlapped the face.
+
+Visual diff vs v13.1 at t=0.7s:
+- v13.1: yellow star in top-right corner overlapping the face
+- **v14**: yellow star at pixel (78, 470) — lower-left near her right hand /
+  guitar position. Face fully visible.
+
+### Asset library wishlist
+
+The v14 mapping table now spreads gesture decorations across 8 distinct
+tags. PNG inventory per tag:
+
+| Tag | PNGs | Coverage | Recommendation |
+|---|---|---|---|
+| heart | 23 | ✓ | — |
+| flower | 20 | ✓ | — |
+| star | 22 | ✓ | — |
+| **burst** | **2** | ✗ | **Add 8-10 PNGs** — firework / energy ring / sunburst / impact splash. This is the biggest gap; `arms_raised` → `burst` events will repeat the same 2 PNGs across a long song. |
+| lightning | 10 | △ | Add 3-5 more dramatic bolts (jagged white-yellow gradient, electric-arc lines) for `jump` gestures. |
+| music_note | 18 | ✓ | — |
+| exclaim | 66 | ✓ | — |
+| arrow | 24 | ✓ | — |
+
+Recommended NEW tag categories (need both asset PNGs + animation
+support — deferred to v15):
+
+- **`trail`** — line-art swooshes + curved-arrow swoops. Pairs with a
+  new `swipe_across(start_pos, end_pos)` animation that the renderer
+  doesn't have yet. Would unlock "從一邊划向另一邊" effects per the
+  user's original ask.
+- **`particle_cluster`** — small dot / petal scatters (4-8 PNGs each).
+  Pairs with per-frame landmark tracking so a "spawn at fingertip"
+  particle can follow the dancer's hand over multiple frames.
+
+### Design decisions (locked)
+
+| Question | Answer |
+|---|---|
+| Anchor symbol resolution | Lives in build_elements (`_resolve_anchor_landmark` switch). Vocab JSON stores the symbol name only — decouples vocab edits from pixel math. |
+| Face-safety policy | Hard rule: gesture decoration NEVER intersects face bbox (landmarks 0-10 + 20 px padding). Push out along shortest axis. |
+| Landmark caching | Lives inside `MotionInfo` (lru_cache in-process). VLM cache key uses `peak_times` so landmarks travel with the peaks they belong to. Old v13.1 cache entries load fine — `landmarks_normalised=None` falls through gracefully. |
+| Swipe / trail animations | Deferred to v15. Needs new element type with `start_pos` + `end_pos` AND new `trail/` asset PNGs the user doesn't have yet. Marked in asset wishlist. |
+
+### Tests still 150 / 150
+
+### Known limits
+
+1. **Face-pushed positions can stack in the corners.** When 4+ events
+   in a row all get pushed up-and-right to avoid the same face, the
+   final stickers cluster. Future v14.1: aware push that distributes
+   push-direction across consecutive events.
+2. **Landmark visibility on motion-blurred frames.** When the hand is
+   blurred during fast motion, MediaPipe gives a low-confidence
+   landmark with possibly-wrong coordinates. v14 doesn't filter on
+   confidence (it just uses the position); future could thread
+   visibility through and fall back to zone for low-vis landmarks.
+3. **Subject-relative not screen-relative**: MediaPipe's "right" is
+   the SUBJECT's right (viewer's left in a mirror selfie). v14 hard-
+   codes `right_index` for peace_sign / point_at_camera which works
+   for selfie footage where the dancer faces the camera. If a future
+   clip has the dancer facing away, the symbol should flip — not
+   handled.
+
+---
+
 # v13.1 — VLM prompt rebuild + asset re-categorisation + zone-driven placement
 
 ## What changed since v13

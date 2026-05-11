@@ -66,6 +66,16 @@ _GESTURES, _FALLBACK_GESTURE, _VOCAB_FINGERPRINT = _load_vocab()
 _VALID_GESTURE_IDS: set[str] = {g["id"] for g in _GESTURES}
 _GESTURE_TAG_MAP: dict[str, str | None] = {g["id"]: g.get("tag") for g in _GESTURES}
 _GESTURE_ANIM_MAP: dict[str, str | None] = {g["id"]: g.get("animation") for g in _GESTURES}
+# v14: gesture → anchor-symbol (e.g. "right_index", "mid_wrists_above")
+# resolved against MediaPipe landmark indices in build_elements.
+_GESTURE_ANCHOR_MAP: dict[str, str | None] = {
+    g["id"]: g.get("anchor_landmark") for g in _GESTURES
+}
+
+
+def gesture_anchor_symbol(gesture: str) -> str | None:
+    """Look up the anchor symbol (e.g. 'right_index') for a gesture id."""
+    return _GESTURE_ANCHOR_MAP.get(gesture)
 
 
 # Defensive: every non-null tag must exist in the closed tag vocab.
@@ -120,6 +130,11 @@ class GestureEvent(BaseModel):
     action: str | None = None
     emotion: str | None = None
     zone: str | None = None
+    # v14: optional per-peak landmark snapshot, normalised [0, 1] of
+    # source frame. Shape (N_LANDMARKS, 2). Set by detect_gestures when
+    # the caller passes `landmarks_by_time`; consumed by build_elements
+    # for hand/face-anchored placement. None falls back to zone-based.
+    landmarks_normalised: list[list[float]] | None = None
 
 
 class GestureInfo(TypedDict):
@@ -306,6 +321,7 @@ def detect_gestures(
     host: str | None = None,
     use_cache: bool = True,
     min_confidence: float = _MIN_CONFIDENCE,
+    landmarks_by_time: dict[float, "np.ndarray | None"] | None = None,
 ) -> GestureInfo:
     """v13.1: structured-JSON gesture detection.
 
@@ -381,6 +397,22 @@ def detect_gestures(
         if zone == "none":
             zone = None  # treat 'none' as "no preference"
 
+        # v14: attach the matching landmark snapshot if the caller threaded
+        # them through. Stored as list[list[float]] so the JSON disk
+        # cache round-trips cleanly.
+        lm_arr = None
+        if landmarks_by_time is not None:
+            arr = landmarks_by_time.get(float(t))
+            if arr is None:
+                # Try the nearest float key — small float-precision drift
+                # between motion_detector and our dict lookup can lose
+                # the exact match.
+                close = [k for k in landmarks_by_time if abs(k - float(t)) < 0.05]
+                if close:
+                    arr = landmarks_by_time[close[0]]
+            if arr is not None:
+                lm_arr = [[float(x), float(y)] for x, y in arr.tolist()]
+
         events.append(GestureEvent(
             time=float(t),
             gesture=gesture,
@@ -390,6 +422,7 @@ def detect_gestures(
             action=str(result.get("action", "")).strip()[:120] or None,
             emotion=str(result.get("emotion", "")).strip().lower() or None,
             zone=zone,
+            landmarks_normalised=lm_arr,
         ))
 
     log.info(
