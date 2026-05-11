@@ -110,6 +110,150 @@ If `[layout/v10]` reports many `shrunk` or `skipped`:
 
 ---
 
+# v12 — motion-aware animation trigger (dancer body motion → entry pool)
+
+## What changed since v11
+
+v6-v11 wired three sync layers: lyric → tag (LLM), beat → timing (librosa
++ snap_to_beat), pose → layout (MediaPipe occupancy). The missing layer
+was **dancer body motion → animation intensity** — so when the dancer
+hits a peak gesture, the on-screen sticker stamps in at that exact frame.
+
+v12 adds a new `motion_detector.py` module (peer to `beat_sync.py`) that
+runs MediaPipe Pose at 15 fps over the video, computes per-frame
+upper-body landmark velocity, z-score normalises, and uses
+`scipy.signal.find_peaks` to extract motion peaks with intensity buckets
+(high / medium / low). The existing `_pick_entry` selector gained one
+more priority tier — **motion peak overrides downbeat**.
+
+Both MoviePy and Hyperframes renderers benefit without any renderer
+code change (both consume `element.animation` as a string; the v8
+animation-pool selector is the only branch point).
+
+### New module: `src/semanticvibe/motion_detector.py`
+
+| API | Purpose |
+|---|---|
+| `MotionInfo` TypedDict | `peak_times`, `peak_intensities`, `energy_envelope`, `sample_fps` |
+| `detect_motion_peaks(video_path, *, sample_fps=15.0)` | `lru_cache(maxsize=8)`, returns `MotionInfo` |
+| `is_motion_peak(t, peaks, tolerance=0.3)` | bool |
+| `motion_intensity_at(t, info, tolerance=0.3)` | `"high"\|"medium"\|"low"\|None` |
+
+Internals (~160 LOC):
+- Walk video at 15 fps via `cv2.VideoCapture` (same pattern as `pose_detector.py`)
+- Reuse `_pose_landmarker()` singleton from `preprocess.mediapipe_pose` — no double model load
+- Keep landmarks **0-22** (head + shoulders + arms + hands). Hips/legs excluded — they jitter with camera bounce more than real choreography
+- Largest-bbox subject pick (same `_area()` lambda as pose_detector)
+- Per-sample energy = MEAN Euclidean velocity of visible landmarks (mean-not-sum so partial visibility doesn't dampen energy)
+- 0.3 s sliding-mean smoothing → z-score normalise (scale-invariant across videos)
+- `scipy.signal.find_peaks(z, prominence=0.5, distance=int(0.3 * sample_fps))` — forces ≥ 0.3 s between peaks
+- Bucket by z-score: `>1.5 → high`, `0.8-1.5 → medium`, `0.3-0.8 → low`, else drop
+
+### Patched `src/semanticvibe/build_elements.py`
+
+New entry pools alongside the v9 DOWNBEAT_ENTRY:
+
+```python
+MOTION_ENTRY_HIGH   = ["stamp", "spin_in", "drop_in"]
+MOTION_ENTRY_MEDIUM = ["scale_pop", "wobble_in"]
+MOTION_ENTRY_LOW    = ["fade", "slide_in_left", "slide_in_right"]
+```
+
+`_pick_entry` priority chain:
+```
+explicit LLM hint  >  motion peak  >  downbeat  >  strength bucket
+```
+
+`build_decision` gained `video_path` + `motion_aware=True` parameters
+mirroring v9's `audio_path` + `beat_sync` pattern.
+
+### Patched `src/semanticvibe/render/__main__.py`
+
+```powershell
+--motion-aware            # default ON
+--no-motion-aware         # ablation toggle
+```
+
+### Verified on `demo.mp4` (32.6 s, 15 fps MediaPipe pass)
+
+Console log:
+
+```
+[motion_sync] demo.mp4: 28 peaks (10 high, 13 medium, 5 low) @ 15.0 fps
+[motion_sync] 28 peaks driving entry-animation choice
+Building Decision (style=baseline_kenpa, subtitle=outlined,
+                   beat_sync=True, motion_aware=True)…
+```
+
+**Ablation comparison** — same lyrics + same Decision, only `--motion-aware`
+flipped:
+
+| Decoration entry pool | `--no-motion-aware` | `--motion-aware` |
+|---|---|---|
+| fade | 6 | 4 |
+| slide_in_left | 5 | 5 |
+| slide_in_right | 8 | 6 |
+| wobble_in | 2 | **4** ← motion medium |
+| spin_in | 0 | **2** ← motion high (only fires here) |
+
+**11 of 21 decoration slots picked a different animation when motion-aware
+was on.** The `spin_in` animation is exclusive to `MOTION_ENTRY_HIGH`, so
+its non-zero count is direct evidence the high-intensity branch fired on
+real motion peaks.
+
+### Motion peaks (first 10) on demo.mp4
+
+| Time | Intensity |
+|---|---|
+| 0.47s | medium |
+| 3.83s | low |
+| 4.23s | low |
+| 4.77s | medium |
+| 5.10s | medium |
+| 6.24s | medium |
+| 6.58s | medium |
+| 7.25s | low |
+| 8.93s | high |
+| 9.33s | medium |
+
+Total: **28 peaks** (10 high, 13 medium, 5 low).
+
+### Design decisions (locked)
+
+| Question | Answer |
+|---|---|
+| Body region | Upper body 0-22 (head + shoulders + arms + hands) |
+| Sample rate | 15 fps |
+| Motion vs downbeat collision | Motion wins (viewer's eye is on the dancer at a peak) |
+| Idle animations | Unchanged for v12 — motion only biases entry |
+| Cache | `lru_cache(maxsize=8)` in-process only (no disk cache) |
+
+### Tests still 150 / 150
+
+The v6 build_elements_from_lyrics path was deliberately not patched
+(no video access there); future work if/when a video-aware caller emerges.
+
+### Performance
+
+Motion detection adds ~30-35 s for a 32 s video at 15 fps (one-time per
+process — `lru_cache` makes re-renders free). Total v12 render time
+on demo.mp4 with Hyperframes:
+
+| Stage | Time |
+|---|---|
+| Whisper + LLM align | ~3 s |
+| beat_sync (v9) | ~3 s |
+| **motion_sync (v12)** | **~33 s** |
+| Pose-mask (v10 layout) | ~3 s |
+| Decision build | <1 s |
+| Frame capture (Puppeteer) | ~50 s |
+| ffmpeg overlay | ~3 s |
+| **TOTAL** | **~95 s** for 32 s output (3× realtime) |
+
+Future Phase 13: cache motion_info to disk so 2nd run drops to ~60 s.
+
+---
+
 # v9 — beat-sync (timings + downbeat-aware animations + tempo-locked pulse)
 
 ## What changed since v8

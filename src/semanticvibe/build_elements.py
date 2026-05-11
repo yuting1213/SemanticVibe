@@ -54,6 +54,11 @@ from semanticvibe.beat_sync import (
     is_high_energy,
     snap_to_beat,
 )
+from semanticvibe.motion_detector import (
+    MotionInfo,
+    detect_motion_peaks,
+    motion_intensity_at,
+)
 from semanticvibe.lyrics import LyricLine
 from semanticvibe.semantic_align import Highlight, align_lyrics
 from semanticvibe.style import default_style_name, get_style
@@ -84,6 +89,14 @@ SOFT_ENTRY = ["fade", "draw_in"]
 # match. spin_in is reserved for "magical" downbeat moments.
 DOWNBEAT_ENTRY = ["stamp", "drop_in", "scale_pop", "spin_in"]
 
+# v12 motion-aware overrides — landed when the dancer hits a body-motion
+# peak (MediaPipe upper-body velocity, z-score normalised). Motion wins
+# over downbeat because the viewer's eye is already locked on the dancer
+# at a peak gesture; the animation hits the visible beat.
+MOTION_ENTRY_HIGH = ["stamp", "spin_in", "drop_in"]
+MOTION_ENTRY_MEDIUM = ["scale_pop", "wobble_in"]
+MOTION_ENTRY_LOW = ["fade", "slide_in_left", "slide_in_right"]
+
 IDLE_POOL_STRONG = ["pulse", "wiggle"]
 IDLE_POOL_NORMAL = ["drift", "wiggle"]
 IDLE_POOL_SOFT = ["shimmer", "drift"]
@@ -108,14 +121,26 @@ def _pick_entry(
     hint: str | None = None,
     *,
     is_downbeat_hit: bool = False,
+    motion_intensity: str | None = None,
 ) -> str:
     """Prefer the LLM-supplied hint; fall back to strength-bucketed pool.
 
-    `is_downbeat_hit=True` upgrades to DOWNBEAT_ENTRY pool (overrides
-    the strength bucket) but still defers to an explicit `hint` when set.
+    Priority chain (v12):
+        explicit hint  >  motion peak  >  downbeat  >  strength bucket
+
+    Motion peak wins over downbeat: the viewer's eye is already on the
+    dancer at a body-motion peak, so the punchy animation lands on the
+    visible beat. Downbeat is auditory and may not coincide with on-
+    screen action.
     """
     if hint:
         return hint
+    if motion_intensity == "high":
+        return rng.choice(MOTION_ENTRY_HIGH)
+    if motion_intensity == "medium":
+        return rng.choice(MOTION_ENTRY_MEDIUM)
+    if motion_intensity == "low":
+        return rng.choice(MOTION_ENTRY_LOW)
     if is_downbeat_hit:
         return rng.choice(DOWNBEAT_ENTRY)
     if strength >= 0.7:
@@ -290,6 +315,8 @@ def build_decision(
     palette_outline: str | None = None,
     audio_path: Path | str | None = None,
     beat_sync: bool = True,
+    video_path: Path | str | None = None,
+    motion_aware: bool = True,
 ) -> Decision:
     """Assemble a `Decision` from a list of `Highlight`s + per-time pose masks.
 
@@ -342,6 +369,23 @@ def build_decision(
         except Exception as exc:  # noqa: BLE001
             log.warning("beat detection failed (%s); continuing without beat sync", exc)
             beat_info = None
+
+    # ---- v12: motion detection (pose-velocity peaks) ---------------------
+    motion_info: MotionInfo | None = None
+    if motion_aware and video_path:
+        try:
+            motion_info = detect_motion_peaks(str(video_path))
+            if motion_info["peak_times"]:
+                log.info(
+                    "[motion_sync] %d peaks driving entry-animation choice",
+                    len(motion_info["peak_times"]),
+                )
+            else:
+                log.info("[motion_sync] no peaks detected; falling through to beat/strength")
+                motion_info = None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("motion detection failed (%s); continuing without it", exc)
+            motion_info = None
 
     # ---- Tag expansion: pad under-tagged highlights with ambient tags. ----
     # Avoids "everything is sparkle" by guaranteeing ≥2 tags per highlight
@@ -482,6 +526,11 @@ def build_decision(
             hl_is_downbeat = False
             hl_in_chorus = False
 
+        # v12: motion-peak intensity bucket ("high"/"medium"/"low"/None).
+        # When set, _pick_entry routes through MOTION_ENTRY_* pools instead
+        # of the strength/downbeat fallback chain.
+        hl_motion = motion_intensity_at(hl.time, motion_info) if motion_info else None
+
         text_idx: int | None = subtitle_index_for_highlight[i]
 
         # Banner-mode + hero-mode legacy paths preserved -------------------
@@ -527,7 +576,8 @@ def build_decision(
                 outline_layers=[OutlineLayer(color=palette_halo, width=4)],
                 shadow_offset=(3, 3) if hl.strength >= 0.7 else None,
                 animation=_pick_entry(hl.strength, rng, hl.entry_animation,
-                                      is_downbeat_hit=hl_is_downbeat),
+                                      is_downbeat_hit=hl_is_downbeat,
+                                      motion_intensity=hl_motion),
                 idle_animation=_pick_idle(hl.strength, rng, hl.idle_animation,
                                           in_chorus=hl_in_chorus),
                 rotation_jitter=2.0,
@@ -610,7 +660,8 @@ def build_decision(
                 base_size=target_size_px,
                 rotation_jitter=10.0,
                 animation=_pick_entry(hl.strength, rng, hl.entry_animation,
-                                      is_downbeat_hit=hl_is_downbeat),
+                                      is_downbeat_hit=hl_is_downbeat,
+                                      motion_intensity=hl_motion),
                 idle_animation=_pick_idle(hl.strength, rng, hl.idle_animation,
                                           in_chorus=hl_in_chorus),
                 color_tint=[],
@@ -638,6 +689,8 @@ def build_decision(
             f" + beat_sync (tempo={beat_info['tempo']:.1f} BPM, "
             f"{snap_count}/{len(highlights)} snapped)"
         )
+    if motion_info:
+        vibe_extras += f" + motion_sync ({len(motion_info['peak_times'])} peaks)"
     return Decision(
         elements=elements,
         global_style=GlobalStyle(

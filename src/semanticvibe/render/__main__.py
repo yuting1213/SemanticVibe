@@ -97,6 +97,26 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                    "embedded audio track.")
     p.add_argument("--no-beat-sync", dest="beat_sync", action="store_false",
                    help="Disable beat-sync (deterministic, no librosa pass).")
+    p.add_argument("--motion-aware", dest="motion_aware",
+                   action="store_true", default=True,
+                   help="Bias entry-animation choice on dancer body-motion "
+                   "peaks (MediaPipe pose velocity). Highlights whose time "
+                   "lands within 0.3s of a motion peak get punchier "
+                   "animations (stamp / spin_in / drop_in for 'high' "
+                   "intensity, scale_pop / wobble_in for 'medium'). "
+                   "Default ON.")
+    p.add_argument("--no-motion-aware", dest="motion_aware",
+                   action="store_false",
+                   help="Disable v12 motion-aware animation override.")
+    p.add_argument("--renderer", choices=["moviepy", "hyperframes"],
+                   default="hyperframes",
+                   help="Frame compositor backend. 'hyperframes' (default, "
+                   "v11) renders via Puppeteer + GSAP + ffmpeg overlay for "
+                   "higher-quality animations; 'moviepy' keeps the legacy "
+                   "Pillow per-frame compositor for ablation comparison.")
+    p.add_argument("--keep-workdir", action="store_true",
+                   help="Keep the hyperframes temp dir (composition.html + "
+                   "frames + overlay.webm) for debugging. Default cleans up.")
     from semanticvibe.style import default_style_name, style_names
     p.add_argument("--style", choices=style_names(),
                    default=default_style_name(),
@@ -302,9 +322,10 @@ def main(argv: list[str] | None = None) -> int:
     canvas_size = _measure_canvas(args, log)
 
     # ---- Step 5: build Decision ----
-    log.info("Building Decision (style=%s, subtitle=%s, beat_sync=%s)…",
+    log.info("Building Decision (style=%s, subtitle=%s, beat_sync=%s, "
+             "motion_aware=%s)…",
              args.style, args.subtitle_style or "<preset default>",
-             args.beat_sync)
+             args.beat_sync, args.motion_aware)
     # Beat-detection audio source: --audio if given (preferred — usually
     # cleaner), else the video's embedded track.
     beat_audio = args.audio if args.audio else args.video
@@ -314,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
         style=args.style, subtitle_style=args.subtitle_style,
         audio_path=beat_audio if args.beat_sync else None,
         beat_sync=args.beat_sync,
+        video_path=args.video if args.motion_aware else None,
+        motion_aware=args.motion_aware,
     )
     log.info(
         "Decision: %d elements (%d text, %d outlined, %d banner, %d decoration, %d hero)",
@@ -350,15 +373,30 @@ def _measure_canvas(args, log) -> tuple[int, int]:
 def _render_decision_path(args, decision: Decision, log: logging.Logger) -> int:
     """Encode + optional audio mix. Shared by the lyrics-driven and
     --elements-json branches."""
-    log.info("Rendering to %s…", args.out)
-    out = render_from_decision(
-        args.video, decision, args.out,
-        fonts_dir=args.fonts_dir,
-        assets_dir=args.assets_dir if args.assets_dir.exists() else None,
-        preview=args.preview,
-    )
-    if args.audio and args.mix_audio:
-        out = _maybe_mix_audio(out, args.audio, args.mix_audio, log)
+    log.info("Rendering to %s via renderer=%s…", args.out, args.renderer)
+    if args.renderer == "hyperframes":
+        from semanticvibe.hyperframes import render_from_decision_hyperframes
+        # Resolve canvas size once so the hyperframes path matches the
+        # legacy preview-canvas behaviour.
+        canvas_size = _measure_canvas(args, log)
+        audio_for_overlay = args.audio if (args.audio and args.mix_audio == "replace") else None
+        out = render_from_decision_hyperframes(
+            args.video, decision, args.out,
+            canvas_size=canvas_size,
+            fps=30,
+            audio_path=audio_for_overlay,
+            preview=args.preview,
+            keep_workdir=args.keep_workdir,
+        )
+    else:
+        out = render_from_decision(
+            args.video, decision, args.out,
+            fonts_dir=args.fonts_dir,
+            assets_dir=args.assets_dir if args.assets_dir.exists() else None,
+            preview=args.preview,
+        )
+        if args.audio and args.mix_audio:
+            out = _maybe_mix_audio(out, args.audio, args.mix_audio, log)
     print(f"wrote {out}")
     return 0
 

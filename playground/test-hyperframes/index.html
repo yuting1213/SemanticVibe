@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 1920px; height: 1080px; overflow: hidden;
+        font-family: 'Noto Sans TC', 'Yu Gothic', 'Segoe UI', sans-serif;
+      }
+      /* Background image fills the entire 1920×1080 frame, simulating a
+         dance video frame the overlay sits on top of. */
+      #bg {
+        position: absolute; inset: 0;
+        background: url("./bg.jpg") center/cover no-repeat #222;
+      }
+      #root { position: relative; width: 100%; height: 100%; }
+      .clip { position: absolute; }
+
+      /* (1) t=1.0: 「電波」 - white fill + pink outline, pixel-anchored. */
+      #denpa {
+        left: 100px; top: 200px;
+        font-size: 140px; font-weight: 900;
+        color: #FFFFFF;
+        -webkit-text-stroke: 10px #FF6B9D;
+        text-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        letter-spacing: 4px;
+      }
+
+      /* (2) t=2.5: a heart PNG decoration. */
+      #heart1 {
+        left: 600px; top: 150px;
+        width: 80px; height: 80px;
+      }
+      #heart1 img { width: 100%; height: 100%; }
+
+      /* (3) t=4.0: 「好き」 + heart group, centred-lower. */
+      #suki_group {
+        left: 50%; top: 70%;
+        transform: translate(-50%, -50%);
+        display: flex; align-items: center; gap: 24px;
+      }
+      #suki_text {
+        font-size: 160px; font-weight: 900;
+        color: #FFFFFF;
+        -webkit-text-stroke: 10px #FF6B9D;
+        text-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      }
+      #suki_heart { width: 120px; height: 120px; }
+      #suki_heart img { width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"
+         data-composition-id="main"
+         data-start="0"
+         data-duration="5"
+         data-width="1920"
+         data-height="1080">
+
+      <div id="bg" data-start="0" data-duration="5" data-track-index="0"></div>
+
+      <!-- (1) 「電波」 — appears at t=1.0, holds 2s. -->
+      <div id="denpa" class="clip"
+           data-start="1.0" data-duration="2.0" data-track-index="2">電波</div>
+
+      <!-- (2) Heart PNG — appears at t=2.5, holds 2s. -->
+      <div id="heart1" class="clip"
+           data-start="2.5" data-duration="2.0" data-track-index="2">
+        <img src="./heart.png" alt="heart" />
+      </div>
+
+      <!-- (3) 「好き」 + heart group — appears at t=4.0, holds 1s with continuous pulse. -->
+      <div id="suki_group" class="clip"
+           data-start="4.0" data-duration="1.0" data-track-index="2">
+        <div id="suki_text">好き</div>
+        <div id="suki_heart"><img src="./heart.png" alt="heart" /></div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      // (1) Element @ t=1.0: scale_pop entry — overshoot + settle.
+      //     0.5s entry. Independent of (2) and (3).
+      tl.from("#denpa", {
+        scale: 0.3, opacity: 0,
+        duration: 0.5, ease: "back.out(2.2)",
+      }, 1.0);
+
+      // (2) Element @ t=2.5: stamp entry — shrinks down from 1.5x with a
+      //     tiny shake. Independent timeline of #denpa.
+      tl.from("#heart1", {
+        scale: 1.5, opacity: 0,
+        duration: 0.35, ease: "back.out(2)",
+      }, 2.5);
+      tl.to("#heart1", {
+        rotation: 5,
+        duration: 0.08, repeat: 3, yoyo: true, ease: "power1.inOut",
+      }, 2.5);
+
+      // (3) Element @ t=4.0: fade-in then INFINITE pulse — proves idle
+      //     animations persist after entry. Two children (#suki_text +
+      //     #suki_heart) pulse with slightly different phases.
+      tl.from("#suki_group", {
+        scale: 0.6, opacity: 0,
+        duration: 0.5, ease: "back.out(2.5)",
+      }, 4.0);
+      // ---- Independent idle (continuous pulse) for the text ----
+      tl.to("#suki_text", {
+        scale: 1.08,
+        duration: 0.5, repeat: -1, yoyo: true, ease: "sine.inOut",
+      }, 4.5);
+      // ---- Independent idle for the heart, slightly faster, opposite phase
+      tl.to("#suki_heart", {
+        scale: 1.18, rotation: -8,
+        duration: 0.4, repeat: -1, yoyo: true, ease: "sine.inOut",
+      }, 4.45);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

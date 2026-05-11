@@ -41,6 +41,13 @@ assets-*.zip
 .tofu_filelist.txt
 .cache/
 
+# v11 Hyperframes Node workspace — node_modules is huge (~200 MB) and
+# can be regenerated with `cd playground/hf_workspace && npm install`.
+playground/hf_workspace/node_modules/
+
+# Stray MoviePy TEMP files (from interrupted moviepy renders)
+*TEMP_MPY_*.mp4
+
 # Models / caches
 models/
 *.bin
