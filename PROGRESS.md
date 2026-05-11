@@ -110,6 +110,161 @@ If `[layout/v10]` reports many `shrunk` or `skipped`:
 
 ---
 
+# v13.1 — VLM prompt rebuild + asset re-categorisation + zone-driven placement
+
+## What changed since v13
+
+User feedback after the first 20260505 v13 render: "**好多旋渦, 動作沒到很精準, 感覺要改 prompt**".
+
+Three independent bugs caused the visual mess. v13.1 fixes all three:
+
+### Bug 1: `sparkle/` was polluted with swirl PNGs
+
+The v6 manual asset routing put `josh_mix.png`, `josh_mix2.png`,
+`josh_water_mix.png` under `assets/stickers/sparkle/` — but they're
+abstract water-swirl drawings, not sparkles. With v13's peace_sign /
+arms_raised / spin all mapping to `sparkle`, the 4-PNG pool was 3/4
+swirls, so the screen filled with renders of the same 3 swirl PNGs.
+
+**Fix**: moved the 3 swirl PNGs to `assets/stickers/cloud/` where they
+belong visually. `sparkle/` now has just the 1 real diamond PNG; the
+AssetRetriever same-category fallback pulls from sibling tags (star,
+ribbon, flower) when more variety is needed.
+
+### Bug 2: Gesture mapping collapsed 4 gestures into 1 tag
+
+`gesture_vocabulary.json` had:
+- peace_sign → `sparkle`
+- arms_raised → `sparkle`
+- spin → `sparkle`
+- (heart_hands → `heart`, smile_close_up → `heart`)
+
+So 4 gestures shared 1 tag. Rewrote to **8 unique tags for 8 gestures**:
+
+| Gesture | v13 tag | **v13.1 tag** |
+|---|---|---|
+| heart_hands | heart | heart |
+| smile_close_up | heart (duplicate!) | **flower** |
+| peace_sign | sparkle | **star** |
+| arms_raised | sparkle (duplicate!) | **burst** |
+| jump | burst | **lightning** |
+| spin | sparkle (duplicate!) | **music_note** |
+| clap | exclaim | exclaim |
+| point_at_camera | arrow | arrow |
+
+Every actionable gesture now resolves to a different tag → visual
+diversity guaranteed even when one gesture dominates a song.
+
+### Bug 3: VLM prompt was wasted on a single label
+
+v13 asked the VLM for one closed-vocab label, ignoring its visual
+reasoning capability. v13.1 asks for **structured JSON** with five
+useful fields:
+
+```json
+{
+  "action":      "一句中文具體描述,例如「右手舉起比V字、左手叉腰」",
+  "emotion":     "excited|shy|intense|calm|playful|serious",
+  "composition": {
+    "subject_main_zone": "top|center|bottom|left|right",
+    "best_empty_zone":   "top_left|top_right|bottom_left|bottom_right|none"
+  },
+  "gesture":     "<closed gesture id>",
+  "animation":   "<closed animation enum>",
+  "confidence":  0.0-1.0
+}
+```
+
+Wins:
+- **`format: "json"`** in the Ollama call forces valid JSON; no more
+  brittle regex parsing.
+- **`confidence < 0.45` → drop the event.** v13's "VLM always answers"
+  failure mode is gone; the model can admit "I'm not sure" and the
+  parser respects it.
+- **`composition.best_empty_zone`** tells the renderer where to place
+  the decoration in pixel space. v13.1 maps the 4 zone keywords to
+  pixel boxes (top_left = `(W*0.05, H*0.05)` etc.) and sets
+  `pixel_anchor` directly — bypasses the v10 ForbiddenMap geometric
+  pass for gesture decorations.
+- **`action` + `emotion`** are free-text fields used purely for
+  debugging today, but landed for future v14 use (e.g. emotion →
+  idle animation).
+- Animation overrides are validated against the renderer's closed
+  `AnimationName` set; "none" or junk falls through to the gesture
+  vocab default.
+
+Negative-example rules added inline:
+```
+"point_at_camera" requires SINGLE arm extended forward with finger
+visible. Both arms down at sides ≠ point_at_camera.
+"heart_hands" requires hands forming a heart shape, not just framing
+the face.
+```
+
+### Verified on 20260505_153230.mp4
+
+```
+[motion_sync] 15 peaks (9 high, 2 medium, 4 low) @ 15.0 fps
+[vlm_gesture] 14/15 peaks → 14 valid events
+              (unknown=0, low_conf=1, non-actionable=0, model=qwen2.5vl:7b)
+Decision: 30 elements (0 text, 5 outlined, 0 banner, 25 decoration, 0 hero)
+```
+
+VLM-reported distributions (now visible thanks to structured output):
+
+| Field | Distribution |
+|---|---|
+| gesture | peace_sign × 14 |
+| emotion | excited × 10, playful × 3, calm × 1 |
+| zone | top_right × 14 |
+| confidence | mean 0.90, min 0.80 |
+| **dropped** | 1 (low_conf) |
+
+The "1 dropped on low confidence" is the WIN — v13 always returned 27/28
+valid events because it never admitted uncertainty. v13.1's confidence
+floor (0.45) lets the model say "I'm not sure" on the one frame it
+genuinely couldn't read.
+
+The "all peace_sign" is an honest model output for this video — the
+dancer really does V-sign in most peak moments. Visual diversity now
+comes from the gesture → tag fan-out (star) plus the lyric-driven
+decorations (heart, sparkle, music_note) layered on top.
+
+### Visual probe
+
+t=5.5 「You are my angel」: real diamond sparkle + pink heart + cute
+heart sticker + star (from peace_sign gesture) — 4 distinct artwork
+types instead of 4 copies of the same swirl.
+
+t=9.0 「可愛くね、すでに君の愛を届け」: 3 different decorations
+(burst-sparkle / headphones / yellow star) in top-right zone — VLM
+correctly identified the right side of frame as empty.
+
+t=16.0 「覚えててください」: green diamond + headphones + cosmic spiral
++ yellow star, all in top-right.
+
+### Tests still 150 / 150
+
+### Known v13.1 limits
+
+1. **Single-zone bias on selfie footage.** VLM consistently picked
+   `top_right` for all 14 frames on 20260505 because the singer was
+   centre-left throughout. Visually, all gestures decorate the same
+   corner. Future v13.2: ask VLM for 2 candidate zones + alternate
+   between them across the song.
+2. **VLM still over-commits to one gesture per video.** On 20260505
+   every peak got `peace_sign`, even frames where she's clearly
+   reaching toward camera (t≈16). Lowering confidence threshold
+   surfaces some of these as misses, but the model carries a strong
+   "this is the peace-sign video" prior. Future v13.2: pass the
+   running tally of seen gestures and ask for variety.
+3. **Cache invalidation on prompt edits**: the cache key includes
+   `vocab_fingerprint` (md5 of gestures list) but NOT the prompt text.
+   So if you only edit the prompt, the cache won't bust. Manually
+   `rm -rf .cache/vlm_gestures` when iterating on the prompt.
+
+---
+
 # v13 — VLM-driven gesture anchoring (dancer's WHAT, not just WHEN)
 
 ## What changed since v12

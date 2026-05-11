@@ -91,12 +91,35 @@ _validate_vocab_against_tags()
 # ---------------------------------------------------------------------------
 
 
+_ZONE_VALUES = {
+    "top_left", "top_right", "bottom_left", "bottom_right", "none",
+}
+
+# Animation names the renderer schema accepts. Must stay in sync with
+# AnimationName in schemas/decision.py. We validate VLM-reported
+# animations against this set and silently fall through to the gesture-
+# vocab default when the VLM emits something else (e.g. "none").
+_VALID_ANIMATIONS = {
+    "bounce_in", "typewriter", "wiggle", "draw_in", "fade",
+    "scale_pop", "drop_in",
+    "slide_in_left", "slide_in_right", "slide_in_top", "slide_in_bottom",
+    "stamp", "wobble_in", "spin_in",
+}
+
+
 class GestureEvent(BaseModel):
     time: float
     gesture: str
     tag: str | None
     animation: str | None
     confidence: float = 0.7
+    # v13.1: VLM-reported per-frame metadata. action is free text (debug);
+    # emotion is an enum (future v14 may drive idle animation by emotion);
+    # zone tells the renderer where the empty space is — caller maps to a
+    # pixel anchor via _zone_to_anchor.
+    action: str | None = None
+    emotion: str | None = None
+    zone: str | None = None
 
 
 class GestureInfo(TypedDict):
@@ -154,22 +177,44 @@ def _save_cache(key: str, events: list[GestureEvent]) -> None:
 # ---------------------------------------------------------------------------
 
 
-_PROMPT_HEADER = (
-    "Look at this image of a young woman who is dancing or vlogging.\n"
-    "What single gesture or action is she most clearly doing right now?\n\n"
-    "Pick EXACTLY ONE label from this list:\n"
-)
-_PROMPT_FOOTER = (
-    "\nRespond with ONLY the label, lowercase, nothing else. No explanation."
-)
-
-
 def _build_prompt() -> str:
-    lines = [_PROMPT_HEADER]
-    for g in _GESTURES:
-        lines.append(f"- {g['id']}")
-    lines.append(_PROMPT_FOOTER)
-    return "\n".join(lines)
+    """v13.1 structured-JSON prompt. Asks for action description + emotion +
+    composition zone + gesture tag/animation/confidence in one pass.
+
+    Key wins over the v13 single-label prompt:
+    - `format: "json"` (set in _ask_vlm) forces valid JSON
+    - confidence < 0.45 → caller drops the event (no more "VLM guessed")
+    - best_empty_zone → renderer places decoration in the actual empty
+      spot the VLM sees, instead of computing it geometrically
+    - action / emotion are free text for debug + future v14 hooks
+    """
+    gesture_ids = [g["id"] for g in _GESTURES]
+    return f"""Analyse this dance-video frame. Respond with STRICT JSON only.
+
+{{
+  "action":     "<one sentence in 繁體中文, very specific — e.g. '右手舉起比V字、左手叉腰'>",
+  "emotion":    "<one of: excited|shy|intense|calm|playful|serious>",
+  "composition": {{
+    "subject_main_zone": "<one of: top|center|bottom|left|right>",
+    "best_empty_zone":   "<one of: top_left|top_right|bottom_left|bottom_right|none>"
+  }},
+  "gesture":    "<one of: {' | '.join(gesture_ids)}>",
+  "animation":  "<one of: stamp|fade|spin_in|scale_pop|drop_in|slide_in_left>",
+  "confidence": <0.0 to 1.0 — how sure you are about the gesture>
+}}
+
+Rules:
+- If you genuinely cannot identify a clear, deliberate gesture (e.g. she
+  is just walking or the frame is motion-blurred mid-step), set
+  gesture="none" and confidence<0.4. Do NOT guess.
+- "point_at_camera" requires SINGLE arm extended forward with finger
+  visible. Both arms down at sides ≠ point_at_camera.
+- "arms_raised" requires BOTH arms clearly above the shoulder line.
+- "heart_hands" requires hands forming a heart shape, not just framing
+  the face.
+- "peace_sign" requires V-sign with index + middle finger near face/head.
+
+Output ONLY the JSON object. No prose, no markdown fences."""
 
 
 def _extract_frame_jpeg_b64(
@@ -200,14 +245,19 @@ def _ask_vlm(
     model: str,
     host: str,
     prompt: str,
-) -> str | None:
-    """Returns the raw, lowercased first-line answer, or None on failure."""
+) -> dict | None:
+    """v13.1: returns the parsed JSON dict (or None on failure).
+
+    Uses Ollama's `format: "json"` flag so we get a syntactically valid
+    JSON object back even when the VLM goes off-script.
+    """
     body = json.dumps({
         "model": model,
         "prompt": prompt,
         "images": [image_b64],
         "stream": False,
-        "options": {"temperature": 0.1, "num_predict": 32},
+        "format": "json",
+        "options": {"temperature": 0.2, "num_predict": 256},
     }).encode("utf-8")
     req = urllib.request.Request(
         f"{host}/api/generate",
@@ -222,15 +272,30 @@ def _ask_vlm(
     except TimeoutError as exc:
         log.warning("VLM timed out on one frame (%s); skipping", exc)
         return None
-    text = (payload.get("response") or "").strip().lower()
+    text = (payload.get("response") or "").strip()
     if not text:
         return None
-    return text.split("\n")[0].strip().rstrip(".,!?")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        # Tolerate stray prose surrounding the JSON.
+        s, e = text.find("{"), text.rfind("}")
+        if s == -1 or e == -1:
+            log.debug("VLM returned non-JSON: %r", text[:200])
+            return None
+        try:
+            return json.loads(text[s : e + 1])
+        except json.JSONDecodeError:
+            log.debug("Could not salvage JSON from %r: %s", text[:200], exc)
+            return None
 
 
 # ---------------------------------------------------------------------------
 # Public entry
 # ---------------------------------------------------------------------------
+
+
+_MIN_CONFIDENCE = 0.45
 
 
 def detect_gestures(
@@ -240,13 +305,14 @@ def detect_gestures(
     model: str = _OLLAMA_DEFAULT_MODEL,
     host: str | None = None,
     use_cache: bool = True,
+    min_confidence: float = _MIN_CONFIDENCE,
 ) -> GestureInfo:
-    """Per-peak gesture detection. See module docstring.
+    """v13.1: structured-JSON gesture detection.
 
-    Returns `GestureInfo` with an `events` list of `GestureEvent` records,
-    one per peak that produced a valid in-vocabulary gesture (peaks
-    rejected by the closed-vocab filter or with `tag: null` mappings
-    are silently dropped — they're "recognised but not actionable").
+    Each VLM call returns {action, emotion, composition.{subject_main_zone,
+    best_empty_zone}, gesture, animation, confidence}. Events below
+    `min_confidence` are dropped — VLM admitting "I'm not sure" is far
+    better than the v13 "VLM always guesses a label" failure mode.
     """
     host = host or _OLLAMA_DEFAULT_HOST
 
@@ -267,34 +333,70 @@ def detect_gestures(
     events: list[GestureEvent] = []
     dropped_unknown = 0
     dropped_null = 0
+    dropped_low_conf = 0
     for t in peak_times:
         b64 = _extract_frame_jpeg_b64(video_path, t)
         if b64 is None:
             continue
-        raw = _ask_vlm(b64, model=model, host=host, prompt=prompt)
-        if raw is None:
+        result = _ask_vlm(b64, model=model, host=host, prompt=prompt)
+        if result is None:
             continue
-        # Tolerate trailing punctuation / leading "label:" prefix.
-        label = raw.replace("label:", "").strip().rstrip(".,!?").strip()
-        if label not in _VALID_GESTURE_IDS:
+
+        gesture = str(result.get("gesture", "")).strip().lower()
+        if gesture not in _VALID_GESTURE_IDS:
             dropped_unknown += 1
-            log.debug("[vlm_gesture] t=%.2f: unknown label %r, dropping", t, raw)
+            log.debug("[vlm_gesture] t=%.2f: unknown gesture %r", t, gesture)
             continue
-        tag = _GESTURE_TAG_MAP[label]
-        anim = _GESTURE_ANIM_MAP[label]
+
+        # Confidence floor.
+        try:
+            conf = float(result.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            conf = 0.5
+        if conf < min_confidence:
+            dropped_low_conf += 1
+            log.debug("[vlm_gesture] t=%.2f: low confidence %.2f for %r",
+                      t, conf, gesture)
+            continue
+
+        # Non-actionable gestures (pose_static / lean_or_sway / none) drop.
+        tag = _GESTURE_TAG_MAP[gesture]
         if tag is None:
             dropped_null += 1
-            log.debug("[vlm_gesture] t=%.2f: label %s is non-actionable", t, label)
             continue
+
+        # VLM can override the default animation, but only if it picks
+        # a known one. "none" or junk → fall back to gesture-vocab default.
+        vlm_anim = str(result.get("animation", "")).strip().lower()
+        if vlm_anim in _VALID_ANIMATIONS:
+            animation = vlm_anim
+        else:
+            animation = _GESTURE_ANIM_MAP[gesture]
+
+        # Composition zone — validated against the known enum.
+        comp = result.get("composition") or {}
+        zone = str(comp.get("best_empty_zone", "")).strip().lower() or None
+        if zone not in _ZONE_VALUES:
+            zone = None
+        if zone == "none":
+            zone = None  # treat 'none' as "no preference"
+
         events.append(GestureEvent(
-            time=float(t), gesture=label, tag=tag, animation=anim,
+            time=float(t),
+            gesture=gesture,
+            tag=tag,
+            animation=animation,
+            confidence=conf,
+            action=str(result.get("action", "")).strip()[:120] or None,
+            emotion=str(result.get("emotion", "")).strip().lower() or None,
+            zone=zone,
         ))
 
     log.info(
         "[vlm_gesture] %d/%d peaks → %d valid events "
-        "(unknown=%d, non-actionable=%d, model=%s, cache=False)",
+        "(unknown=%d, low_conf=%d, non-actionable=%d, model=%s, cache=False)",
         len(events), len(peak_times), len(events),
-        dropped_unknown, dropped_null, model,
+        dropped_unknown, dropped_low_conf, dropped_null, model,
     )
 
     if use_cache and events:

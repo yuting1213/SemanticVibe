@@ -713,11 +713,32 @@ def build_decision(
     # ---- v13: emit a first-class decoration at each gesture event -------
     # These decorations are anchored to the dancer's actual gesture time,
     # not the lyric time — that's the whole point of v13.
+    #
+    # v13.1: when the VLM reported a `best_empty_zone`, we honour it and
+    # compute a pixel_anchor inside that zone (rng-jittered for variety).
+    # Otherwise we leave pixel_anchor=None and the renderer falls back to
+    # ForbiddenMap geometric placement.
     if gesture_events:
         gesture_size = max(64, int(canvas_size[0] * 0.18))
+        cw, ch = canvas_size
+        zone_to_box = {
+            "top_left":     (int(cw * 0.05), int(ch * 0.05), int(cw * 0.35), int(ch * 0.20)),
+            "top_right":    (int(cw * 0.65), int(ch * 0.05), int(cw * 0.95), int(ch * 0.20)),
+            "bottom_left":  (int(cw * 0.05), int(ch * 0.70), int(cw * 0.35), int(ch * 0.85)),
+            "bottom_right": (int(cw * 0.65), int(ch * 0.70), int(cw * 0.95), int(ch * 0.85)),
+        }
         for ev in gesture_events:
             if ev.tag is None:
                 continue
+            pixel_anchor = None
+            if ev.zone and ev.zone in zone_to_box:
+                x1, y1, x2, y2 = zone_to_box[ev.zone]
+                # Centre-of-zone minus half-size, clamped to canvas.
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                ax = max(8, min(cw - gesture_size - 8, cx - gesture_size // 2))
+                ay = max(8, min(ch - gesture_size - 8, cy - gesture_size // 2))
+                pixel_anchor = (ax, ay)
             elements.append(DecorationElement(
                 asset_tag=ev.tag,
                 start_time=ev.time,
@@ -727,7 +748,12 @@ def build_decision(
                 animation=ev.animation or "scale_pop",
                 idle_animation="pulse",
                 color_tint=[],
-                reasoning=f"v13 gesture={ev.gesture!r} at motion peak {ev.time:.2f}s",
+                pixel_anchor=pixel_anchor,
+                reasoning=(
+                    f"v13 gesture={ev.gesture!r} (conf={ev.confidence:.2f}, "
+                    f"zone={ev.zone or 'auto'}) at peak {ev.time:.2f}s"
+                    + (f" — action: {ev.action!r}" if ev.action else "")
+                ),
             ))
 
         # Dedup: if a lyric-driven decoration uses the same tag within
