@@ -39,6 +39,14 @@ _OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 _OLLAMA_DEFAULT_MODEL = "qwen2.5vl:7b"
 _REQUEST_TIMEOUT_SEC = 120
 
+# v14a: bump when _build_prompt content changes — included in cache key so
+# old VLM responses from prior prompt revisions are silently ignored.
+_PROMPT_VERSION = "v14a"
+# Rolling window of recent tags fed back into each per-peak prompt. 5 is
+# enough to discourage 14/14-peace_sign-style lock-in without ballooning
+# the prompt or letting an old tag from minute 1 still suppress at minute 3.
+_PREV_TAG_WINDOW = 5
+
 
 # ---------------------------------------------------------------------------
 # Vocab loading
@@ -160,6 +168,7 @@ def _cache_key(
         "mtime": mtime,
         "model": model,
         "vocab_fp": _VOCAB_FINGERPRINT,
+        "prompt_version": _PROMPT_VERSION,
         "peaks": [round(t, 3) for t in peak_times],
     }
     blob = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -192,23 +201,35 @@ def _save_cache(key: str, events: list[GestureEvent]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_prompt() -> str:
-    """v13.1 structured-JSON prompt. Asks for action description + emotion +
-    composition zone + gesture tag/animation/confidence in one pass.
+def _build_prompt(previous_tags: list[str] | None = None) -> str:
+    """v14a structured-JSON prompt — adds rolling-context + should_decorate gate.
 
-    Key wins over the v13 single-label prompt:
-    - `format: "json"` (set in _ask_vlm) forces valid JSON
-    - confidence < 0.45 → caller drops the event (no more "VLM guessed")
-    - best_empty_zone → renderer places decoration in the actual empty
-      spot the VLM sees, instead of computing it geometrically
-    - action / emotion are free text for debug + future v14 hooks
+    Changes from v13.1:
+    - `previous_tags`: last N decoration tags already placed in EARLIER
+      peaks of THIS video. Pushes the VLM toward variety — solves the
+      v13.1 failure mode where qwen2.5vl locked onto one gesture
+      (peace_sign 14/14 on 20260505).
+    - `should_decorate`: explicit boolean for "this peak is not worth
+      decorating". Eliminates the "every motion peak gets a sticker"
+      over-density problem. Caller drops events where this is false.
+    - `skip_reason`: required when should_decorate=false, useful for
+      debugging the model's skip judgement.
     """
     gesture_ids = [g["id"] for g in _GESTURES]
+    prev = previous_tags or []
+    recent = ", ".join(prev[-_PREV_TAG_WINDOW:]) if prev else "(無)"
+
     return f"""Analyse this dance-video frame. Respond with STRICT JSON only.
 
+# Context
+- 此影片較早的 peak 已加過的裝飾 tag(請避免重複,除非本幀動作壓倒性吻合):{recent}
+- 不是每個 peak 都該加裝飾。優秀剪輯只在關鍵動作加,過場/輕微動作請 skip。
+
 {{
-  "action":     "<one sentence in 繁體中文, very specific — e.g. '右手舉起比V字、左手叉腰'>",
-  "emotion":    "<one of: excited|shy|intense|calm|playful|serious>",
+  "action":          "<one sentence in 繁體中文, very specific — e.g. '右手舉起比V字、左手叉腰'>",
+  "emotion":         "<one of: excited|shy|intense|calm|playful|serious>",
+  "should_decorate": <true|false — 此刻是否值得加裝飾>,
+  "skip_reason":     "<若 should_decorate=false 必填一句說明 (例如 '過場幀'); true 時填空字串>",
   "composition": {{
     "subject_main_zone": "<one of: top|center|bottom|left|right>",
     "best_empty_zone":   "<one of: top_left|top_right|bottom_left|bottom_right|none>"
@@ -219,15 +240,15 @@ def _build_prompt() -> str:
 }}
 
 Rules:
-- If you genuinely cannot identify a clear, deliberate gesture (e.g. she
-  is just walking or the frame is motion-blurred mid-step), set
-  gesture="none" and confidence<0.4. Do NOT guess.
-- "point_at_camera" requires SINGLE arm extended forward with finger
-  visible. Both arms down at sides ≠ point_at_camera.
-- "arms_raised" requires BOTH arms clearly above the shoulder line.
-- "heart_hands" requires hands forming a heart shape, not just framing
-  the face.
-- "peace_sign" requires V-sign with index + middle finger near face/head.
+- should_decorate=true 的條件:舞者有明顯、刻意的動作 — V 字、比愛心、雙臂舉起、跳躍、爆發 pose、明確指向鏡頭。
+  過場、走路、輕微擺動、只是站定或微笑 → should_decorate=false。
+- 避免重複:若你想選的 gesture 對應 tag 已出現在「已加過清單」內,且本幀不是壓倒性吻合該 gesture,
+  優先改選別的 gesture,或設 should_decorate=false。重複裝飾比留白還糟。
+- 過場/模糊/看不清 → gesture="none" + should_decorate=false + confidence<0.4。Do NOT guess.
+- "point_at_camera" 需單臂前伸 + 食指可見。雙手垂下 ≠ point_at_camera。
+- "arms_raised" 需**雙臂**明顯高於肩線。
+- "heart_hands" 需雙手形成愛心形狀,非單純框臉。
+- "peace_sign" 需 V 字食指 + 中指清楚可見,且靠近頭/臉部。
 
 Output ONLY the JSON object. No prose, no markdown fences."""
 
@@ -345,17 +366,30 @@ def detect_gestures(
             )
             return GestureInfo(events=cached, model=model, cache_hit=True)
 
-    prompt = _build_prompt()
     events: list[GestureEvent] = []
+    chosen_tags: list[str] = []  # rolling history fed into next prompt
     dropped_unknown = 0
     dropped_null = 0
     dropped_low_conf = 0
+    dropped_should_skip = 0
     for t in peak_times:
         b64 = _extract_frame_jpeg_b64(video_path, t)
         if b64 is None:
             continue
+        prompt = _build_prompt(previous_tags=chosen_tags)
         result = _ask_vlm(b64, model=model, host=host, prompt=prompt)
         if result is None:
+            continue
+
+        # v14a: VLM explicit skip — drops the peak entirely. Done BEFORE
+        # gesture-validation so a "should_decorate=false + gesture=peace_sign"
+        # response (the VLM hedging) still skips instead of leaking a sticker.
+        should_dec = result.get("should_decorate")
+        if should_dec is False:
+            dropped_should_skip += 1
+            reason = str(result.get("skip_reason", "")).strip()[:80]
+            log.debug("[vlm_gesture] t=%.2f: should_decorate=false (%s)",
+                      t, reason or "no reason given")
             continue
 
         gesture = str(result.get("gesture", "")).strip().lower()
@@ -424,12 +458,13 @@ def detect_gestures(
             zone=zone,
             landmarks_normalised=lm_arr,
         ))
+        chosen_tags.append(tag)
 
     log.info(
         "[vlm_gesture] %d/%d peaks → %d valid events "
-        "(unknown=%d, low_conf=%d, non-actionable=%d, model=%s, cache=False)",
+        "(unknown=%d, low_conf=%d, non-actionable=%d, vlm_skip=%d, model=%s, cache=False)",
         len(events), len(peak_times), len(events),
-        dropped_unknown, dropped_low_conf, dropped_null, model,
+        dropped_unknown, dropped_low_conf, dropped_null, dropped_should_skip, model,
     )
 
     if use_cache and events:

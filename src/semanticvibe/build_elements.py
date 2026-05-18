@@ -560,6 +560,9 @@ def build_decision(
     # with the gesture-implied tag + animation. Lyric-driven decorations
     # whose tag matches a gesture event within ±0.5s are deduped later.
     gesture_events: list[GestureEvent] = []
+    # v14e: face bboxes harvested from per-peak landmarks so lyric-driven
+    # decorations can avoid the face too (was previously gesture-only).
+    face_rects_by_time: dict[float, tuple[int, int, int, int]] = {}
     if vlm_gestures and video_path and motion_info:
         try:
             gi = detect_gestures(
@@ -574,6 +577,46 @@ def build_decision(
                 len(gesture_events),
                 len(motion_info["peak_times"]),
                 gi["cache_hit"],
+            )
+            # v14a: temporal density cap. Idol-pop videos that repeat the
+            # same gesture for tens of seconds (e.g. 20260505 has V-sign in
+            # 14/15 peaks) otherwise produce a sticker every ~1s, killing
+            # the "breathing" feel pro editing has. Per tag, require a
+            # minimum gap — keep the first, drop subsequent ones inside the
+            # window. Doesn't touch placement → face-safety push-out in the
+            # render loop still runs on the survivors.
+            min_gap = 2.5
+            kept: list = []
+            last_time_by_tag: dict[str, float] = {}
+            for ev in gesture_events:
+                if ev.tag is None:
+                    kept.append(ev)
+                    continue
+                last_t = last_time_by_tag.get(ev.tag)
+                if last_t is not None and (ev.time - last_t) < min_gap:
+                    continue
+                kept.append(ev)
+                last_time_by_tag[ev.tag] = ev.time
+            if len(kept) < len(gesture_events):
+                log.info(
+                    "[vlm_gesture] density cap: %d → %d events (min %.1fs gap per tag)",
+                    len(gesture_events), len(kept), min_gap,
+                )
+            gesture_events = kept
+
+            # v14e: harvest per-peak face bboxes so lyric-driven decorations
+            # can also avoid the face (gesture path already does this; this
+            # extends the protection to lyric heroes that previously crashed
+            # into the singer's face in close-up framing).
+            for ev in gesture_events:
+                if ev.landmarks_normalised is None:
+                    continue
+                face = _face_bbox(ev.landmarks_normalised, canvas_size, padding=40)
+                if face is not None:
+                    face_rects_by_time[ev.time] = face
+            log.info(
+                "[face_safety] %d face bboxes harvested for lyric placement",
+                len(face_rects_by_time),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning(
@@ -815,7 +858,14 @@ def build_decision(
                 person_masks=canvas_pose_masks,
                 subtitle_rects=subtitle_rects,
                 canvas_size=canvas_size,
+                person_padding_iters=30,  # v14e: was 10 — more breathing room
             )
+            # v14e: also forbid the face bbox if we have one near this time.
+            if face_rects_by_time:
+                nearest_t = min(face_rects_by_time, key=lambda k: abs(k - hl.time))
+                if abs(nearest_t - hl.time) < 2.0:
+                    fx1, fy1, fx2, fy2 = face_rects_by_time[nearest_t]
+                    fmap.add_rect(fx1, fy1, fx2 - fx1, fy2 - fy1, padding=20)
 
             prefer = rng.choice(corner_zones) if is_hero_dec else None
             anchor = fmap.find_free_position(
@@ -890,7 +940,9 @@ def build_decision(
     # anchor overlaps the face bbox (landmarks 0-10 + 20px padding),
     # slide along the shortest axis until clear.
     if gesture_events:
-        gesture_size = max(64, int(canvas_size[0] * 0.18))
+        # v14e: larger gesture decorations so they actually register at the
+        # peak moment. Was 0.18 — too small to compete with lyric heroes.
+        gesture_size = max(96, int(canvas_size[0] * 0.28))
         cw, ch = canvas_size
         zone_to_box = {
             "top_left":     (int(cw * 0.05), int(ch * 0.05), int(cw * 0.35), int(ch * 0.20)),

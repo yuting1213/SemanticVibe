@@ -96,6 +96,14 @@ KEYWORD_TO_TAGS: dict[str, list[str]] = {
     "kiss":      ["kiss"],
     "唇":        ["kiss"],
     "ちゅ":       ["kiss"],
+    "smile":     ["emoji"],
+    "笑":        ["emoji"],
+    "happy":     ["emoji"],
+    "開心":      ["emoji"],
+    "微笑":      ["emoji"],
+    "にこ":      ["emoji"],
+    "wink":      ["emoji"],
+    "face":      ["emoji"],
 
     # ----- decorative -----
     "sparkle":   ["sparkle"],
@@ -117,6 +125,14 @@ KEYWORD_TO_TAGS: dict[str, list[str]] = {
     "twinkle":   ["star", "sparkle"],
     "夢":        ["star"],
     "dream":     ["star"],
+    "diamond":   ["gem"],
+    "crystal":   ["gem"],
+    "jewel":     ["gem"],
+    "gem":       ["gem"],
+    "寶":        ["gem"],
+    "鑽":        ["gem"],
+    "晶":        ["gem"],
+    "precious":  ["gem"],
 
     # ----- energy -----
     "fire":      ["fire"],
@@ -148,6 +164,15 @@ KEYWORD_TO_TAGS: dict[str, list[str]] = {
     "!":         ["exclaim"],
     "!":         ["exclaim"],
     "dot":       ["dot"],
+    "gift":      ["celebration"],
+    "balloon":   ["celebration"],
+    "crown":     ["celebration"],
+    "party":     ["celebration"],
+    "birthday":  ["celebration"],
+    "禮物":      ["celebration"],
+    "慶":        ["celebration"],
+    "祝":        ["celebration"],
+    "皇冠":      ["celebration"],
 
     # ----- weather -----
     "sun":       ["sun"],

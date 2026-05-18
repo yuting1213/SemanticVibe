@@ -85,8 +85,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                    help="Highlight aligner. rule_based = offline keyword dict; "
                    "claude routes through .cache/alignment for repeat runs; "
                    "ollama hits a local Ollama server (no API key needed).")
-    p.add_argument("--ollama-model", default="gemma3:4b",
-                   help="Ollama model tag (default gemma3:4b). Run "
+    p.add_argument("--ollama-model", default="qwen2.5:7b",
+                   help="Ollama model tag (default qwen2.5:7b — strong CJK, "
+                   "better lyric→tag matching than gemma3:4b). Run "
                    "`ollama list` to see what you have pulled.")
     p.add_argument("--ollama-host", default=None,
                    help="Ollama server URL (default http://localhost:11434).")
@@ -362,6 +363,14 @@ def main(argv: list[str] | None = None) -> int:
         sum(1 for e in decision.elements if e.type == "decoration"),
         sum(1 for e in decision.elements if e.type == "hero_text"),
     )
+
+    # Debug hook: SV_DUMP_DECISION=path saves the Decision JSON for inspection.
+    import os
+    _dump = os.environ.get("SV_DUMP_DECISION")
+    if _dump:
+        from pathlib import Path as _P
+        _P(_dump).write_text(decision.model_dump_json(indent=2), encoding="utf-8")
+        log.info("Decision dumped to %s", _dump)
 
     return _render_decision_path(args, decision, log)
 

@@ -139,8 +139,16 @@ class AssetRetriever:
                 c for c in pool
                 if Path(c["file"]).name.startswith(prefer_prefix)
             ]
+            # v14a: soft preference. Stick with `preferred` only if it can
+            # actually offer variety once the recent-used deque is applied.
+            # When the whole preferred set is in `_recent` (e.g. star has
+            # 2 josh_* PNGs but 14 sequential gesture peaks), fall back to
+            # the full candidate pool so the rotation can reach tofu_*.
             if preferred:
-                pool = preferred
+                if not avoid_recent or any(
+                    c["file"] not in self._recent for c in preferred
+                ):
+                    pool = preferred
         if avoid_recent and len(pool) > 1:
             filtered = [c for c in pool if c["file"] not in self._recent]
             if filtered:
