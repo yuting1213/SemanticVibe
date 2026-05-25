@@ -39,6 +39,9 @@ failed.log
 
 # Asset upload zips (250MB+ each, regenerated from source)
 assets-*.zip
+assets.zip
+new assets-*/
+new assets-*.zip
 .tofu_filelist.txt
 .cache/
 
